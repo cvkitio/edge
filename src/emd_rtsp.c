@@ -616,17 +616,12 @@ static void dispatch_rtp_data(emd_rtsp_client_t *c,
 /* Read and process interleaved data from TCP.  Returns -1 on socket error. */
 static int process_interleaved(emd_rtsp_client_t *c) {
     /* Format: $ channel(1) length(2) data... */
-    static int dbg_frames = 0;
     for (;;) {
         uint8_t hdr[4];
         int r = emd_tcp_recv(c->fd, hdr, 1);
         if (r == EMD_NET_AGAIN) return 0;
-        if (r == 0) { fprintf(stderr, "[DBG interleaved] EOF fd=%d frames=%d\n", c->fd, dbg_frames); return -1; }
-        if (r < 0) { fprintf(stderr, "[DBG interleaved] ERR fd=%d frames=%d\n", c->fd, dbg_frames); return -1; }
-
-        int fc = dbg_frames++;
-        if (fc < 30 || fc % 100 == 0)
-            fprintf(stderr, "[DBG interleaved] byte=0x%02X frame#%d fd=%d\n", hdr[0], fc, c->fd);
+        if (r == 0) return -1;
+        if (r < 0) return -1;
 
         if (hdr[0] == '$') {
             /* Interleaved frame */

@@ -134,6 +134,53 @@ target_include_directories(emd_core PUBLIC
 )
 
 # ---------------------------------------------------------------------------
+# Phase 2: libemd (library for emd-agent)
+# ---------------------------------------------------------------------------
+# Hot-path components only (RTSP/RTP/depay/inspector/ringbuf/muxer)
+# Excludes standalone-only modules: supervisor, mqtt, config parser
+set(LIBEMD_SOURCES
+    src/emd_log.c
+    src/emd_metrics.c
+    src/emd_net.c
+    src/emd_rtsp.c
+    src/emd_rtp.c
+    src/emd_h264_depay.c
+    src/emd_h265_depay.c
+    src/emd_h264_parse.c
+    src/emd_h265_parse.c
+    src/emd_inspector.c
+    src/emd_ringbuf.c
+    src/emd_event.c
+    src/emd_mux_mpegts.c
+    src/emd_mux_fmp4.c
+    src/emd_recorder.c
+    src/emd_cam.c
+)
+
+# Static library (for Go agent static linking where possible)
+add_library(emd_static STATIC ${LIBEMD_SOURCES})
+target_link_libraries(emd_static PUBLIC m pthread)
+target_include_directories(emd_static PUBLIC
+    ${CMAKE_SOURCE_DIR}/include
+)
+set_target_properties(emd_static PROPERTIES
+    OUTPUT_NAME emd
+    POSITION_INDEPENDENT_CODE ON
+)
+
+# Shared library (for Go agent dynamic linking)
+add_library(emd_shared SHARED ${LIBEMD_SOURCES})
+target_link_libraries(emd_shared PUBLIC m pthread)
+target_include_directories(emd_shared PUBLIC
+    ${CMAKE_SOURCE_DIR}/include
+)
+set_target_properties(emd_shared PROPERTIES
+    OUTPUT_NAME emd
+    VERSION ${PROJECT_VERSION}
+    SOVERSION 1
+)
+
+# ---------------------------------------------------------------------------
 # Main executable
 # ---------------------------------------------------------------------------
 add_executable(emd src/main.c)
@@ -156,10 +203,30 @@ endif()
 # ---------------------------------------------------------------------------
 # Install
 # ---------------------------------------------------------------------------
+# Standalone binary
 install(TARGETS emd DESTINATION bin)
+
+# Phase 2: libemd libraries and headers
+install(TARGETS emd_static emd_shared
+    ARCHIVE DESTINATION lib
+    LIBRARY DESTINATION lib
+    RUNTIME DESTINATION bin
+)
+
+# Phase 2: Install agent ABI header + required Phase 1 headers
 install(FILES
+    ${CMAKE_SOURCE_DIR}/include/emd/agent_abi.h
     ${CMAKE_SOURCE_DIR}/include/emd/config.h
+    ${CMAKE_SOURCE_DIR}/include/emd/event.h
+    ${CMAKE_SOURCE_DIR}/include/emd/recorder.h
+    ${CMAKE_SOURCE_DIR}/include/emd/inspector.h
+    ${CMAKE_SOURCE_DIR}/include/emd/ringbuf.h
     ${CMAKE_SOURCE_DIR}/include/emd/log.h
+    DESTINATION include/emd
+)
+
+# Optional: install all headers (for debugging / development)
+install(FILES
     ${CMAKE_SOURCE_DIR}/include/emd/metrics.h
     ${CMAKE_SOURCE_DIR}/include/emd/net.h
     ${CMAKE_SOURCE_DIR}/include/emd/rtsp.h
@@ -168,10 +235,6 @@ install(FILES
     ${CMAKE_SOURCE_DIR}/include/emd/h265_depay.h
     ${CMAKE_SOURCE_DIR}/include/emd/h264_parse.h
     ${CMAKE_SOURCE_DIR}/include/emd/h265_parse.h
-    ${CMAKE_SOURCE_DIR}/include/emd/inspector.h
-    ${CMAKE_SOURCE_DIR}/include/emd/ringbuf.h
-    ${CMAKE_SOURCE_DIR}/include/emd/event.h
-    ${CMAKE_SOURCE_DIR}/include/emd/recorder.h
     ${CMAKE_SOURCE_DIR}/include/emd/mqtt.h
     ${CMAKE_SOURCE_DIR}/include/emd/supervisor.h
     DESTINATION include/emd

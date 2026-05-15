@@ -184,8 +184,6 @@ static void push_nal_to_ring(cam_nal_ctx_t *ctx,
                 ev.pre_roll_pts  = (ctx->au_pts > pre_ticks) ? ctx->au_pts - pre_ticks : 0;
                 ev.post_roll_pts = ctx->au_pts + post_ticks;
 
-                fprintf(stderr, "[DBG] event pushed: type=%d reason=%s pts=%" PRIu64 "\n",
-                        ev.type, ev.reason, ev.started_pts_90khz);
                 emd_event_bus_push(ctx->bus, &ev);
             }
         }
@@ -216,13 +214,6 @@ static void h264_nal_cb(const uint8_t *nal, size_t len,
     (void)marker;
     h264_cb_state_t *s = (h264_cb_state_t *)userdata;
     if (!nal || len == 0) return;
-    static _Atomic int dbg_nal_count = 0;
-    int nc = atomic_fetch_add_explicit(&dbg_nal_count, 1, memory_order_relaxed);
-    if (nc < 10) {
-        fprintf(stderr, "[DBG] h264_nal_cb #%d len=%zu pts=%u type=%d\n",
-                nc, len, pts, nal[0] & 0x1F);
-    }
-
     uint8_t nal_type = nal[0] & 0x1Fu;
     uint8_t flags    = 0;
     if (nal_type == 5)              flags |= EMD_NAL_KEYFRAME;
@@ -306,9 +297,6 @@ static void on_rtp_packet(uint8_t channel, const uint8_t *data,
 static void *camera_worker(void *arg) {
     cam_worker_arg_t *wa = (cam_worker_arg_t *)arg;
     const emd_camera_cfg_t *cfg = wa->cam_cfg;
-    fprintf(stderr, "[DBG] camera_worker started: cam=%s url=%s\n",
-            cfg->name, cfg->url);
-
     cam_rtp_ctx_t ctx;
     memset(&ctx, 0, sizeof(ctx));
     ctx.codec = (cfg->codec_hint == EMD_CODEC_H265) ? 2u : 1u;
@@ -342,21 +330,12 @@ static void *camera_worker(void *arg) {
     emd_rtsp_client_t *rtsp = emd_rtsp_client_new(cfg->url, on_rtp_packet, &ctx);
     if (!rtsp) {
         EMD_LOGE("supervisor", "failed to create RTSP client");
-        fprintf(stderr, "[DBG] emd_rtsp_client_new FAILED\n");
         goto cleanup;
     }
-    fprintf(stderr, "[DBG] RTSP client created, setting transport=%d\n",
-            cfg->transport == EMD_TRANSPORT_TCP);
     emd_rtsp_set_transport(rtsp, cfg->transport == EMD_TRANSPORT_TCP);
 
-    static _Atomic int dbg_tick_count = 0;
     while (!*wa->stop) {
         int r = emd_rtsp_tick(rtsp);
-        int tc = atomic_fetch_add_explicit(&dbg_tick_count, 1, memory_order_relaxed);
-        if (tc < 5 || (tc % 1000 == 0)) {
-            fprintf(stderr, "[DBG] tick #%d returned %d state=%d\n",
-                    tc, r, (int)emd_rtsp_get_state(rtsp));
-        }
         if (r < 0) {
             struct timespec ts = {.tv_sec = 0, .tv_nsec = 10000000L};
             nanosleep(&ts, NULL);
