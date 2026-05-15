@@ -1,0 +1,29 @@
+# emd_e2e.toml — sample config used by the E2E test harness.
+# The fake RTSP server listens on 127.0.0.1:8554 and MQTT is a dummy URL
+# (MQTT failure does not block clip writing — see spec §4.4).
+
+[runtime]
+log_level       = "debug"
+metrics_listen  = "127.0.0.1:9464"
+clip_root       = "/tmp/emd_e2e_test/clips"
+inflight_root   = "/tmp/emd_e2e_test/inflight"
+
+[recording]
+container       = "mpegts"
+muxer           = "intree"
+fsync_policy    = "never"
+
+[mqtt]
+url             = "mqtt://127.0.0.1:11883"
+client_id_prefix = "emd-e2e"
+
+[cameras.cam0]
+url               = "rtsp://127.0.0.1:8554/stream"
+transport         = "tcp"
+codec_hint        = "h264"
+buffer_seconds    = 12
+pre_roll_seconds  = 4
+post_roll_seconds = 6
+clip_max_seconds  = 60
+motion_z_high     = 2.5
+intra_ratio_high  = 2.0

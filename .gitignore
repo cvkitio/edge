@@ -1,0 +1,10 @@
+build/
+*.o
+*.a
+*.so
+*.dylib
+/tmp/
+tests/fixtures/streams/*.h264
+tests/fixtures/streams/*.ts
+tests/fixtures/streams/*.mp4
+tests/integration/__pycache__/
