@@ -33,8 +33,8 @@ func Run(ctx context.Context, configPath string) error {
 	// For MVP, use a hardcoded camera config
 	// TODO: parse TOML config from configPath
 	cfg := &libemd.CameraConfig{
-		Name:            "test_camera",
-		URL:             "rtsp://root:***REDACTED_PASSWORD***@10.45.81.7/axis-media/media.amp?videocodec=h264&resolution=1920x1080",
+		Name:            "video_file_test",
+		URL:             "rtsp://localhost:8554/test",
 		CamID:           0,
 		Transport:       0, // TCP
 		CodecHint:       1, // H.264
@@ -46,7 +46,7 @@ func Run(ctx context.Context, configPath string) error {
 		MotionZHigh:     3.0,
 		IntraRatioHigh:  2.5,
 		OnThreshold:     2,
-		OffThreshold:    15,
+		OffThreshold:    10, // Lower threshold for video file testing
 		GradualEnabled:  false,
 	}
 

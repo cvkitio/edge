@@ -1,0 +1,170 @@
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: emd
+
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: emd-agent-config
+  namespace: emd
+data:
+  agent.toml: |
+    # Generated config will be injected here
+    # Use: kubectl create configmap emd-agent-config --from-file=agent.toml -n emd
+
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: emd-agent-data
+  namespace: emd
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 100Gi
+  storageClassName: standard
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: emd-agent
+  namespace: emd
+  labels:
+    app: emd-agent
+    version: phase2-mvp
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: emd-agent
+  template:
+    metadata:
+      labels:
+        app: emd-agent
+        version: phase2-mvp
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "9464"
+        prometheus.io/path: "/metrics"
+    spec:
+      containers:
+      - name: emd-agent
+        image: your-registry/emd-agent:phase2-mvp
+        imagePullPolicy: Always
+
+        # Resource limits (calculated for 16 cameras)
+        resources:
+          requests:
+            cpu: "4000m"      # 4 cores (250m per camera baseline)
+            memory: "4Gi"     # 4 GB (250Mi per camera)
+          limits:
+            cpu: "8000m"      # 8 cores (burst capacity)
+            memory: "8Gi"     # 8 GB (2x overhead)
+
+        # Environment
+        env:
+        - name: GOMAXPROCS
+          value: "8"
+        - name: GOMEMLIMIT
+          value: "7GiB"
+
+        # Volumes
+        volumeMounts:
+        - name: config
+          mountPath: /etc/emd-agent
+          readOnly: true
+        - name: data
+          mountPath: /var/lib/emd-agent
+
+        # Ports
+        ports:
+        - name: metrics
+          containerPort: 9464
+          protocol: TCP
+
+        # Health checks
+        livenessProbe:
+          httpGet:
+            path: /healthz
+            port: 9464
+          initialDelaySeconds: 30
+          periodSeconds: 30
+          timeoutSeconds: 5
+          failureThreshold: 3
+
+        readinessProbe:
+          httpGet:
+            path: /readyz
+            port: 9464
+          initialDelaySeconds: 10
+          periodSeconds: 10
+          timeoutSeconds: 3
+
+        # Security
+        securityContext:
+          runAsNonRoot: true
+          runAsUser: 1000
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: false  # Need write for /var/lib/emd-agent
+          capabilities:
+            drop:
+            - ALL
+
+      # Volumes
+      volumes:
+      - name: config
+        configMap:
+          name: emd-agent-config
+      - name: data
+        persistentVolumeClaim:
+          claimName: emd-agent-data
+
+      # Scheduling
+      nodeSelector:
+        workload: camera-ingestion
+      tolerations:
+      - key: "workload"
+        operator: "Equal"
+        value: "camera-ingestion"
+        effect: "NoSchedule"
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: emd-agent-metrics
+  namespace: emd
+  labels:
+    app: emd-agent
+spec:
+  type: ClusterIP
+  selector:
+    app: emd-agent
+  ports:
+  - name: metrics
+    port: 9464
+    targetPort: 9464
+    protocol: TCP
+
+---
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: emd-agent
+  namespace: emd
+  labels:
+    app: emd-agent
+spec:
+  selector:
+    matchLabels:
+      app: emd-agent
+  endpoints:
+  - port: metrics
+    interval: 30s
+    path: /metrics
