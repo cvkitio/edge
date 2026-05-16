@@ -31,6 +31,11 @@ func Run(ctx context.Context, configPath string) error {
 	eventCh := make(chan libemd.Event, 1000)  // Buffer for all cameras
 	statsCh := make(chan libemd.StatsSample, 100)
 
+	// Create recorder worker
+	recorder := NewRecorderWorker(cfg, eventCh)
+	recorder.Start()
+	defer recorder.Stop()
+
 	// Track camera workers
 	var wg sync.WaitGroup
 	stopCh := make(chan struct{})
@@ -42,25 +47,43 @@ func Run(ctx context.Context, configPath string) error {
 		camID++
 
 		wg.Add(1)
-		go func(cfg *libemd.CameraConfig) {
+		go func(cfg *libemd.CameraConfig, camName string) {
 			defer wg.Done()
-			err := libemd.RunCameraWorker(cfg, eventCh, statsCh, stopCh)
+
+			// Open camera
+			cam, err := libemd.OpenCamera(cfg, eventCh, statsCh)
 			if err != nil {
-				log.Printf("camera %s worker error: %v", cfg.Name, err)
+				log.Printf("camera %s open error: %v", camName, err)
+				return
 			}
-		}(libCfg)
+			defer cam.Close()
+
+			// Register with recorder
+			recorder.RegisterCamera(camName, cam)
+
+			// Monitor stop channel
+			go func() {
+				<-stopCh
+				cam.Stop()
+			}()
+
+			// Run camera worker
+			if err := cam.Run(); err != nil {
+				log.Printf("camera %s worker error: %v", camName, err)
+			}
+		}(libCfg, name)
 
 		log.Printf("started camera worker: %s (cam_id=%d)", name, libCfg.CamID)
 	}
 
-	// Event processor
+	// Stats logger (events are handled by recorder)
 	go func() {
 		for {
 			select {
 			case evt := <-eventCh:
+				// Log event (recorder will handle clip creation)
 				log.Printf("EVENT: cam=%s type=%s reason=%s pts=%d",
 					evt.CamName, evt.Type, evt.Reason, evt.StartedPTS)
-				// TODO: gate rules, recorder driver, publisher, uploader
 			case sample := <-statsCh:
 				log.Printf("STATS: cam=%d bpf_ewma=%.1f fsm=%d rtsp=%d",
 					sample.CamID, sample.BPFEwma, sample.FSMState, sample.RTSPState)

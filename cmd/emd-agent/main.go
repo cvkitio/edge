@@ -16,9 +16,13 @@ import (
 	"flag"
 	"fmt"
 	"log"
+	"net/http"
+	_ "net/http/pprof"
 	"os"
 	"os/signal"
+	"runtime"
 	"syscall"
+	"time"
 
 	"github.com/cvkitio/cvkit/edge/emd-agent/internal/agent"
 	"github.com/cvkitio/cvkit/edge/emd-agent/internal/libemd"
@@ -27,6 +31,8 @@ import (
 var (
 	configPath = flag.String("config", "/etc/emd-agent/agent.toml", "path to config file")
 	version    = flag.Bool("version", false, "print version and exit")
+	pprofAddr  = flag.String("pprof", "localhost:6060", "pprof debug server address")
+	metricsAddr = flag.String("metrics", ":9464", "metrics and health check server address")
 )
 
 func main() {
@@ -51,6 +57,17 @@ func main() {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
+	// Start pprof debug server
+	go func() {
+		log.Printf("pprof debug server listening on %s", *pprofAddr)
+		if err := http.ListenAndServe(*pprofAddr, nil); err != nil {
+			log.Printf("pprof server error: %v", err)
+		}
+	}()
+
+	// Start memory stats logger
+	go logMemoryStats(ctx)
+
 	// Signal handling
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
@@ -67,4 +84,27 @@ func main() {
 	}
 
 	log.Printf("emd-agent stopped cleanly")
+}
+
+// logMemoryStats periodically logs memory statistics for debugging.
+func logMemoryStats(ctx context.Context) {
+	ticker := time.NewTicker(30 * time.Second)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			var m runtime.MemStats
+			runtime.ReadMemStats(&m)
+			log.Printf("MEMORY: alloc=%dMB sys=%dMB heapAlloc=%dMB heapSys=%dMB numGC=%d goroutines=%d",
+				m.Alloc/1024/1024,
+				m.Sys/1024/1024,
+				m.HeapAlloc/1024/1024,
+				m.HeapSys/1024/1024,
+				m.NumGC,
+				runtime.NumGoroutine())
+		}
+	}
 }
