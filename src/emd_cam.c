@@ -48,6 +48,43 @@ const char *emd_build_info(void) {
 }
 
 /* ---------------------------------------------------------------------------
+ * Base64 decoding (for SPS/PPS from SDP)
+ * ------------------------------------------------------------------------- */
+
+static const uint8_t BASE64_DEC[256] = {
+    ['A']=0,  ['B']=1,  ['C']=2,  ['D']=3,  ['E']=4,  ['F']=5,  ['G']=6,  ['H']=7,
+    ['I']=8,  ['J']=9,  ['K']=10, ['L']=11, ['M']=12, ['N']=13, ['O']=14, ['P']=15,
+    ['Q']=16, ['R']=17, ['S']=18, ['T']=19, ['U']=20, ['V']=21, ['W']=22, ['X']=23,
+    ['Y']=24, ['Z']=25, ['a']=26, ['b']=27, ['c']=28, ['d']=29, ['e']=30, ['f']=31,
+    ['g']=32, ['h']=33, ['i']=34, ['j']=35, ['k']=36, ['l']=37, ['m']=38, ['n']=39,
+    ['o']=40, ['p']=41, ['q']=42, ['r']=43, ['s']=44, ['t']=45, ['u']=46, ['v']=47,
+    ['w']=48, ['x']=49, ['y']=50, ['z']=51, ['0']=52, ['1']=53, ['2']=54, ['3']=55,
+    ['4']=56, ['5']=57, ['6']=58, ['7']=59, ['8']=60, ['9']=61, ['+']=62, ['/']=63,
+    ['=']=0
+};
+
+static size_t base64_decode(const char *src, uint8_t *dst, size_t dst_sz) {
+    size_t out = 0;
+    size_t i = 0;
+    size_t len = strlen(src);
+
+    while (i < len && out + 3 <= dst_sz) {
+        uint8_t a = BASE64_DEC[(unsigned char)src[i++]];
+        if (i >= len) break;
+        uint8_t b = BASE64_DEC[(unsigned char)src[i++]];
+        if (i >= len) break;
+        uint8_t c = (src[i] == '=') ? 0 : BASE64_DEC[(unsigned char)src[i++]];
+        if (i >= len) break;
+        uint8_t d = (src[i] == '=') ? 0 : BASE64_DEC[(unsigned char)src[i++]];
+
+        dst[out++] = (uint8_t)((a << 2) | (b >> 4));
+        if (src[i-2] != '=') dst[out++] = (uint8_t)((b << 4) | (c >> 2));
+        if (src[i-1] != '=') dst[out++] = (uint8_t)((c << 6) | d);
+    }
+    return out;
+}
+
+/* ---------------------------------------------------------------------------
  * NAL assembly context (per-camera userdata for depay callbacks)
  * ------------------------------------------------------------------------- */
 
@@ -93,9 +130,44 @@ struct emd_cam {
     /* RTSP client */
     emd_rtsp_client_t  *rtsp;
 
+    /* SPS/PPS from SDP (for clip injection) */
+    uint8_t             sps_data[256];
+    size_t              sps_len;
+    uint8_t             pps_data[128];
+    size_t              pps_len;
+    uint8_t             vps_data[256];  /* H.265 only */
+    size_t              vps_len;
+
     /* Stop flag */
     _Atomic bool        stop_requested;
 };
+
+/* ---------------------------------------------------------------------------
+ * SPS/PPS extraction from SDP
+ * ------------------------------------------------------------------------- */
+
+/* Extract SPS/PPS from sprop-parameter-sets="sps_b64,pps_b64" */
+static void extract_h264_params(emd_cam_t *cam, const char *sprop) {
+    if (!sprop || !*sprop) return;
+
+    /* Find comma separator */
+    const char *comma = strchr(sprop, ',');
+    if (!comma) return;
+
+    /* Decode SPS (before comma) */
+    size_t sps_b64_len = (size_t)(comma - sprop);
+    char sps_b64[512];
+    if (sps_b64_len >= sizeof(sps_b64)) return;
+    memcpy(sps_b64, sprop, sps_b64_len);
+    sps_b64[sps_b64_len] = '\0';
+    cam->sps_len = base64_decode(sps_b64, cam->sps_data, sizeof(cam->sps_data));
+
+    /* Decode PPS (after comma) */
+    const char *pps_start = comma + 1;
+    /* Skip any spaces or semicolons */
+    while (*pps_start && (*pps_start == ' ' || *pps_start == ';')) pps_start++;
+    cam->pps_len = base64_decode(pps_start, cam->pps_data, sizeof(cam->pps_data));
+}
 
 /* ---------------------------------------------------------------------------
  * NAL push to ring + inspector
@@ -384,16 +456,53 @@ int emd_cam_run(emd_cam_t *cam, char *errbuf, size_t errbuf_len)
     emd_rtsp_set_transport(cam->rtsp, cam->cfg.transport == EMD_TRANSPORT_TCP);
 
     char log_msg[256];
-    snprintf(log_msg, sizeof(log_msg), "running camera %s", cam->cfg.name);
+    snprintf(log_msg, sizeof(log_msg), "running camera %s (rtsp=%p)", cam->cfg.name, (void*)cam->rtsp);
     EMD_LOGI("cam", log_msg);
 
     /* Main loop */
+    bool extracted_sdp = false;
+    int loop_count = 0;
+    EMD_LOGI("cam", "entering main loop");
     while (!atomic_load_explicit(&cam->stop_requested, memory_order_acquire)) {
+        loop_count++;
+        if (loop_count == 1) {
+            EMD_LOGI("cam", "first loop iteration");
+        }
+
         int r = emd_rtsp_tick(cam->rtsp);
         if (r < 0) {
             /* Backoff handled inside emd_rtsp_tick */
             struct timespec ts = {.tv_sec = 0, .tv_nsec = 10000000L};
             nanosleep(&ts, NULL);
+        }
+
+        /* Extract SPS/PPS from SDP once we're connected */
+        if (!extracted_sdp) {
+            emd_rtsp_state_t state = emd_rtsp_get_state(cam->rtsp);
+            if (loop_count == 1 || loop_count == 10 || loop_count % 10000 == 0) {  /* Log at start, iteration 10, and every 10000 loops */
+                char log_buf[128];
+                snprintf(log_buf, sizeof(log_buf), "RTSP state=%u loop=%d", (unsigned)state, loop_count);
+                EMD_LOGI("cam", log_buf);
+            }
+
+            if (state == RTSP_STATE_PLAYING) {
+                const emd_rtsp_sdp_t *sdp = emd_rtsp_get_sdp(cam->rtsp);
+                char log_buf[512];
+                EMD_LOGI("cam", "RTSP reached PLAYING state");
+                if (sdp && codec == 1) {
+                    snprintf(log_buf, sizeof(log_buf), "SDP sprop: %.100s",
+                            sdp->sprop_parameter_sets);
+                    EMD_LOGI("cam", log_buf);
+                    if (sdp->sprop_parameter_sets[0]) {
+                        extract_h264_params(cam, sdp->sprop_parameter_sets);
+                        snprintf(log_buf, sizeof(log_buf),
+                                "extracted SPS/PPS: sps_len=%zu pps_len=%zu",
+                                cam->sps_len, cam->pps_len);
+                        EMD_LOGI("cam", log_buf);
+                    }
+                }
+                extracted_sdp = true;
+            }
         }
     }
 
@@ -484,6 +593,19 @@ int emd_cam_record(emd_cam_t *cam,
         emd_ringbuf_snapshot_release(&snap);
         if (errbuf) snprintf(errbuf, errbuf_len, "mux open failed");
         return -2;
+    }
+
+    /* Inject SPS/PPS from SDP at the beginning of the clip (H.264 only for now) */
+    uint64_t first_pts = snap.count > 0 ? snap.records[0].pts_90khz : from_pts_90khz;
+    if (cam->nal_ctx.codec == 1) {
+        if (cam->sps_len > 0) {
+            mux->write_nal(mux_ctx, cam->sps_data, cam->sps_len,
+                          first_pts, first_pts, false);
+        }
+        if (cam->pps_len > 0) {
+            mux->write_nal(mux_ctx, cam->pps_data, cam->pps_len,
+                          first_pts, first_pts, false);
+        }
     }
 
     /* Write all NALs from the snapshot */

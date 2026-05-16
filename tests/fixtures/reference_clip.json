@@ -1,0 +1,44 @@
+{
+    "frames": [
+        {
+            "key_frame": 1,
+            "pkt_size": "1020230",
+            "pict_type": "I"
+        },
+        {
+            "key_frame": 0,
+            "pkt_size": "2746",
+            "pict_type": "P"
+        },
+        {
+            "key_frame": 0,
+            "pkt_size": "2746",
+            "pict_type": "P"
+        },
+        {
+            "key_frame": 0,
+            "pkt_size": "3482",
+            "pict_type": "P"
+        },
+        {
+            "key_frame": 0,
+            "pkt_size": "3666",
+            "pict_type": "P"
+        },
+        {
+            "key_frame": 0,
+            "pkt_size": "4218",
+            "pict_type": "P"
+        },
+        {
+            "key_frame": 0,
+            "pkt_size": "4218",
+            "pict_type": "P"
+        },
+        {
+            "key_frame": 0,
+            "pkt_size": "4402",
+            "pict_type": "P"
+        }
+    ]
+}
