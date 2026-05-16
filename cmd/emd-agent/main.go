@@ -25,6 +25,7 @@ import (
 	"time"
 
 	"github.com/cvkitio/cvkit/edge/emd-agent/internal/agent"
+	"github.com/cvkitio/cvkit/edge/emd-agent/internal/api"
 	"github.com/cvkitio/cvkit/edge/emd-agent/internal/libemd"
 )
 
@@ -33,6 +34,7 @@ var (
 	version    = flag.Bool("version", false, "print version and exit")
 	pprofAddr  = flag.String("pprof", "localhost:6060", "pprof debug server address")
 	metricsAddr = flag.String("metrics", ":9464", "metrics and health check server address")
+	apiAddr    = flag.String("api", ":8080", "API server address")
 )
 
 func main() {
@@ -78,8 +80,31 @@ func main() {
 		cancel()
 	}()
 
+	// Load configuration
+	cfg, err := agent.LoadConfig(*configPath)
+	if err != nil {
+		log.Fatalf("load config: %v", err)
+	}
+
+	log.Printf("loaded %d cameras from config", len(cfg.Cameras))
+
+	// Create supervisor
+	supervisor := agent.NewSupervisor(cfg)
+
+	// Start API server
+	apiHandler := api.NewHandler(supervisor)
+	apiMux := http.NewServeMux()
+	apiHandler.RegisterRoutes(apiMux)
+
+	go func() {
+		log.Printf("API server listening on %s", *apiAddr)
+		if err := http.ListenAndServe(*apiAddr, apiMux); err != nil {
+			log.Printf("API server error: %v", err)
+		}
+	}()
+
 	// Run supervisor
-	if err := agent.Run(ctx, *configPath); err != nil {
+	if err := supervisor.Start(ctx); err != nil {
 		log.Fatalf("supervisor error: %v", err)
 	}
 

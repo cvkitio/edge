@@ -111,3 +111,12 @@ func (s *Supervisor) Start(ctx context.Context) error {
 func (s *Supervisor) GetRecorder() *RecorderWorker {
 	return s.recorder
 }
+
+// GetCameraNames returns a list of all camera names.
+func (s *Supervisor) GetCameraNames() []string {
+	names := make([]string, 0, len(s.cfg.Cameras))
+	for name := range s.cfg.Cameras {
+		names = append(names, name)
+	}
+	return names
+}
