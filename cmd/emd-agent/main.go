@@ -24,9 +24,13 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus/promhttp"
+
 	"github.com/cvkitio/cvkit/edge/emd-agent/internal/agent"
 	"github.com/cvkitio/cvkit/edge/emd-agent/internal/api"
+	"github.com/cvkitio/cvkit/edge/emd-agent/internal/health"
 	"github.com/cvkitio/cvkit/edge/emd-agent/internal/libemd"
+	"github.com/cvkitio/cvkit/edge/emd-agent/internal/metrics"
 )
 
 var (
@@ -88,8 +92,25 @@ func main() {
 
 	log.Printf("loaded %d cameras from config", len(cfg.Cameras))
 
+	// Initialize Prometheus metrics
+	promMetrics := metrics.New()
+	promMetrics.CameraTotal.Set(float64(len(cfg.Cameras)))
+
 	// Create supervisor
-	supervisor := agent.NewSupervisor(cfg)
+	supervisor := agent.NewSupervisor(cfg, promMetrics)
+
+	// Start health check and metrics server (for Kubernetes probes and Prometheus)
+	healthHandler := health.NewHandler()
+	healthMux := http.NewServeMux()
+	healthHandler.RegisterRoutes(healthMux)
+	healthMux.Handle("/metrics", promhttp.Handler())
+
+	go func() {
+		log.Printf("health check and metrics server listening on %s", *metricsAddr)
+		if err := http.ListenAndServe(*metricsAddr, healthMux); err != nil {
+			log.Printf("health check and metrics server error: %v", err)
+		}
+	}()
 
 	// Start API server
 	apiHandler := api.NewHandler(supervisor)

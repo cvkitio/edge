@@ -14,8 +14,11 @@ Available as both a **standalone C daemon** (Phase 1) and a **Go agent with C li
 - **Encoded-domain motion detection** — z-score analysis of bytes-per-frame and I-frame ratios; never decodes pixels
 - **Multi-camera support** — Phase 2 Go agent handles dozens of cameras per instance
 - **Pre-roll / post-roll clips** — atomic write to MPEG-TS (`.ts`) or fragmented MP4 (`.mp4`)
+- **Runtime configuration API** — REST API for tuning motion detection parameters without restart
+- **Kubernetes health checks** — `/healthz` and `/readyz` endpoints for liveness and readiness probes
 - **Event notifications** — MQTT publishing and event callbacks
-- **Prometheus metrics** — per-camera counters and histograms
+- **Prometheus metrics** — per-camera counters, histograms, and system metrics
+- **Disk management** — automatic clip retention and quota enforcement
 - **Lock-free hot path** — C11 `_Atomic` throughout; no mutexes on camera worker threads
 - **Container-ready** — Docker images for x86-64 and ARM64
 - **Kubernetes-ready** — Helm charts and manifests for production deployment
@@ -146,7 +149,11 @@ cp k8s/agent.toml.example config.toml
 # Edit config.toml with your camera URLs
 
 # Run
-./build/emd-agent --config config.toml
+./build/emd-agent \
+  --config config.toml \
+  --api :8080 \
+  --metrics :9464 \
+  --pprof localhost:6060
 ```
 
 ### Docker
@@ -156,7 +163,18 @@ cp k8s/agent.toml.example config.toml
 docker build -t emd-agent:latest .
 
 # Run with config volume
-docker run -v $(pwd)/config.toml:/etc/emd-agent/agent.toml:ro emd-agent:latest
+docker run \
+  -p 8080:8080 \
+  -p 9464:9464 \
+  -v $(pwd)/config.toml:/etc/emd-agent/agent.toml:ro \
+  -v emd-clips:/var/lib/emd-agent/clips \
+  emd-agent:latest
+
+# Access API
+curl http://localhost:8080/api/cameras
+
+# Access metrics
+curl http://localhost:9464/metrics
 ```
 
 ### Kubernetes
@@ -242,6 +260,84 @@ rtsp://user:pass@IP:554/stream
 
 ---
 
+## Runtime Configuration API
+
+The agent exposes a REST API (default port 8080) for runtime configuration changes without restart.
+
+### API Endpoints
+
+**Health check:**
+```bash
+GET /health
+```
+
+**List cameras:**
+```bash
+GET /api/cameras
+```
+
+**Get motion detection config:**
+```bash
+GET /api/cameras/{name}/config
+```
+
+**Update motion detection config:**
+```bash
+PUT /api/cameras/{name}/config
+Content-Type: application/json
+
+{
+  "motion_z_high": 5.0,
+  "on_threshold": 3
+}
+```
+
+### Common Use Cases
+
+**Reduce false positives** (static scenes):
+```bash
+curl -X PUT http://localhost:8080/api/cameras/front_door/config \
+  -H "Content-Type: application/json" \
+  -d '{
+    "motion_z_high": 6.0,
+    "on_threshold": 3,
+    "off_threshold": 60
+  }'
+```
+
+**Increase sensitivity** (high-activity areas):
+```bash
+curl -X PUT http://localhost:8080/api/cameras/parking_lot/config \
+  -H "Content-Type: application/json" \
+  -d '{
+    "motion_z_high": 2.5,
+    "on_threshold": 2
+  }'
+```
+
+**Verify configuration change:**
+```bash
+curl http://localhost:8080/api/cameras/front_door/config | jq
+```
+
+### Tunable Parameters
+
+| Parameter | Type | Range | Default | Description |
+|-----------|------|-------|---------|-------------|
+| `motion_z_high` | float | 0-100 | 3.0 | Z-score threshold - higher = less sensitive |
+| `intra_ratio_high` | float | 0-100 | 2.5 | Intra-macroblock ratio threshold |
+| `on_threshold` | uint8 | 1-255 | 2 | Consecutive frames to trigger event |
+| `off_threshold` | uint8 | 1-255 | 45 | Consecutive frames to return to idle |
+| `bpf_floor` | float | > 0 | 100.0 | Minimum bytes-per-frame (prevents div/0) |
+| `configured_periodic_kf` | bool | - | false | Camera sends periodic keyframes |
+| `gradual_enabled` | bool | - | false | Enable gradual scene change detection |
+| `gradual_threshold` | float | 0-1 | 0.15 | Gradual change threshold |
+| `gradual_window_frames` | uint32 | > 0 | 900 | Gradual detection window size |
+
+**Note**: The API supports **partial updates** — only send fields you want to change.
+
+---
+
 ## Build Options
 
 ### C Library Only
@@ -313,6 +409,42 @@ Tests video file ingestion and motion detection against pre-recorded fixtures.
 
 ## Monitoring
 
+### Health Check Endpoints
+
+For Kubernetes liveness and readiness probes (default port 9464):
+
+**Liveness probe** (always returns 200 if process running):
+```bash
+GET /healthz
+```
+
+**Readiness probe** (returns 200 if cameras connected):
+```bash
+GET /readyz
+```
+
+**Camera status**:
+```bash
+GET /health/cameras
+```
+
+Example Kubernetes config:
+```yaml
+livenessProbe:
+  httpGet:
+    path: /healthz
+    port: 9464
+  initialDelaySeconds: 10
+  periodSeconds: 30
+
+readinessProbe:
+  httpGet:
+    path: /readyz
+    port: 9464
+  initialDelaySeconds: 5
+  periodSeconds: 10
+```
+
 ### Logs
 
 **Structured JSON logs** (one per line):
@@ -325,24 +457,87 @@ Tests video file ingestion and motion detection against pre-recorded fixtures.
 2026/05/16 00:48:47 EVENT: cam=front_door type=motion reason=z=12.43 pts=2773458478
 ```
 
+**Clip creation logs**:
+```
+2026/05/16 00:48:50 CLIP: created front_door_20260516_004850_a3f2b1c8.ts size=15MB duration=16.2s z=12.43 (recorded in 0.3s)
+```
+
 **Stats logs** (periodic):
 ```
 2026/05/16 00:48:52 STATS: cam=0 bpf_ewma=248.8 fsm=0 rtsp=0
+```
+
+**Memory stats** (every 30s):
+```
+2026/05/16 00:49:00 MEMORY: alloc=42MB sys=68MB heapAlloc=42MB heapSys=64MB numGC=12 goroutines=35
 ```
 
 ### Prometheus Metrics
 
 Exposed on `:9464/metrics`:
 
+**Camera metrics:**
+```prometheus
+# Camera connection status (1=connected, 0=disconnected)
+emd_camera_status{camera="front_door"} 1
+
+# Number of cameras connected
+emd_cameras_connected 14
+
+# Total configured cameras
+emd_cameras_total 14
 ```
+
+**Event metrics:**
+```prometheus
 # Motion events per camera
-emd_agent_events_total{camera="front_door",type="motion"} 42
+emd_events_total{camera="front_door",type="motion"} 42
 
-# Bytes per frame EWMA
-emd_agent_camera_bpf_ewma{camera="front_door"} 1823.5
+# Total motion events across all cameras
+emd_motion_events_total 156
+```
 
-# FSM state (0=IDLE, 1=ACTIVE, 2=COOLDOWN)
-emd_agent_camera_fsm_state{camera="front_door"} 0
+**Recording metrics:**
+```prometheus
+# Clips created per camera
+emd_clips_created_total{camera="front_door"} 12
+
+# Bytes written per camera
+emd_clip_bytes_total{camera="front_door"} 185400320
+
+# Clip duration histogram
+emd_clip_duration_seconds_bucket{camera="front_door",le="15"} 8
+emd_clip_duration_seconds_bucket{camera="front_door",le="30"} 12
+
+# Recording errors
+emd_recording_errors_total{camera="front_door",error="write_failed"} 0
+```
+
+**System metrics:**
+```prometheus
+# Go runtime metrics
+emd_goroutines 35
+emd_memory_alloc_bytes 44040192
+emd_memory_sys_bytes 71303168
+emd_memory_heap_bytes 44040192
+
+# GC pause times
+emd_gc_duration_seconds_bucket{le="0.001"} 145
+```
+
+**Disk metrics:**
+```prometheus
+# Disk usage per camera
+emd_disk_usage_bytes{camera="front_door"} 1850400000
+
+# Clip count per camera
+emd_disk_clips_total{camera="front_door"} 124
+
+# Cleanup runs
+emd_disk_cleanup_runs_total 48
+
+# Clips deleted by cleanup
+emd_disk_clips_deleted_total 12
 ```
 
 ---
@@ -352,19 +547,26 @@ emd_agent_camera_fsm_state{camera="front_door"} 0
 ### Resource Usage (Phase 2)
 
 **Per camera** (1080p30 H.264):
-- CPU: 80-150m (0.08-0.15 cores)
-- Memory: 35-40 MB
+- CPU: 80-150m (0.08-0.15 cores) — optimized hot path with zero-copy NAL handling
+- Memory: 35-40 MB — fixed-size ring buffers, no per-frame allocations
+- Disk: ~200 MB/hour (default 2 GB quota per camera with 7-day retention)
 - Network: 4-8 Mbps inbound
 
 **16 cameras on single instance**:
 - CPU: 1.5-3.5 cores (baseline to peak)
-- Memory: 1.2-2.5 GB
+- Memory: 1.2-2.5 GB stable (no leaks, verified with pprof)
 - Network: 64-128 Mbps
+- Disk: ~50 GB with default retention (2 GB × 16 cameras + overhead)
 
 **Tested platforms**:
 - Ampere Altra (ARM64): 30+ cameras per core
 - AMD Ryzen 5800X (x86-64): 20-25 cameras per core
 - Raspberry Pi 4 (ARM64): 4-6 cameras total
+
+**Recent optimizations**:
+- **Zero-copy NAL processing**: Direct RTP payload to ring buffer (no intermediate malloc)
+- **SPS/PPS injection**: Automatic parameter set injection for clip playback compatibility
+- **Disk management**: Automatic cleanup based on age and quota (runs every 5 minutes)
 
 ---
 
@@ -425,9 +627,25 @@ resources:
 
 ### Memory Growth
 
-- **Cause**: Ring buffer leak or clip retention misconfigured
-- **Fix**: Check `max_bytes_per_camera` and `retention_days`
-- **Monitor**: `process_resident_memory_bytes` metric
+- **Cause**: Ring buffer leak (should be fixed in recent builds)
+- **Fix**: Check memory profiling at `http://localhost:6060/debug/pprof/heap`
+- **Monitor**: `emd_memory_alloc_bytes` and `emd_memory_heap_bytes` metrics
+- **Expected**: Stable 35-40 MB per camera after initial allocation
+
+### Disk Full
+
+- **Cause**: Clips accumulating faster than cleanup
+- **Fix**: Lower `max_bytes_per_camera` or `retention_days` in config
+- **Check**: `emd_disk_usage_bytes` and `emd_disk_clips_total` metrics
+- **Manual cleanup**: `rm -rf /var/lib/emd-agent/clips/camera_name/*`
+- **Automatic**: Cleanup runs every 5 minutes
+
+### Clips Won't Play
+
+- **Cause**: Missing SPS/PPS parameter sets
+- **Fix**: Recent builds automatically inject SPS/PPS into clips
+- **Test**: `ffprobe /path/to/clip.ts` should show video stream
+- **Workaround**: Ensure camera sends parameter sets periodically
 
 ---
 
