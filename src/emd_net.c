@@ -31,6 +31,12 @@ static int set_nonblocking(int fd) {
     return fcntl(fd, F_SETFL, flags | O_NONBLOCK);
 }
 
+static int set_blocking(int fd) {
+    int flags = fcntl(fd, F_GETFL, 0);
+    if (flags < 0) return -1;
+    return fcntl(fd, F_SETFL, flags & ~O_NONBLOCK);
+}
+
 static int wait_ready(int fd, bool for_write, uint32_t timeout_ms) {
     struct pollfd pfd = { .fd = fd, .events = for_write ? POLLOUT : POLLIN };
     int r = poll(&pfd, 1, (int)timeout_ms);
@@ -87,6 +93,26 @@ int emd_tcp_connect(const char *host, uint16_t port, uint32_t timeout_ms) {
     }
 
     freeaddrinfo(res);
+
+    if (fd >= 0) {
+        /* Connected successfully — make socket blocking with recv timeout */
+        set_blocking(fd);
+
+        /* Set SO_RCVTIMEO to 100ms to avoid busy-loop on recv */
+        struct timeval tv;
+        tv.tv_sec = 0;
+        tv.tv_usec = 100000;  /* 100ms */
+        if (setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv)) < 0) {
+            EMD_LOGW("net", "failed to set SO_RCVTIMEO");
+        }
+
+        /* On macOS, also set SO_NOSIGPIPE to avoid SIGPIPE on send */
+        #ifdef SO_NOSIGPIPE
+        int nosigpipe = 1;
+        setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &nosigpipe, sizeof(nosigpipe));
+        #endif
+    }
+
     return fd; /* -1 if all failed */
 }
 
