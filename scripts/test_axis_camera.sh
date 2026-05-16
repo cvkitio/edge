@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Test emd against the live AXIS P4708-PLVE panoramic camera at 10.45.81.7
+# Test emd against the live AXIS P4708-PLVE panoramic camera at 192.168.1.7
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$SCRIPT_DIR/.."
@@ -10,7 +10,7 @@ INFLIGHT_DIR="/tmp/emd_axis/inflight"
 mkdir -p "$CLIP_DIR" "$INFLIGHT_DIR"
 
 echo "AXIS P4708-PLVE live test"
-echo "  Camera:   10.45.81.7"
+echo "  Camera:   192.168.1.7"
 echo "  Config:   $CONFIG"
 echo "  Clips:    $CLIP_DIR"
 echo ""

@@ -8,3 +8,13 @@ tests/fixtures/streams/*.h264
 tests/fixtures/streams/*.ts
 tests/fixtures/streams/*.mp4
 tests/integration/__pycache__/
+
+# Private deployment files (contain camera IPs, credentials)
+k8s/agent.toml
+k8s/camera_list.txt
+k8s/discovery.log
+DEPLOYMENT_STATUS.md
+LIVE_MONITORING.md
+
+# Docker artifacts
+*.tar

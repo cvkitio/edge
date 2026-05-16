@@ -23,10 +23,10 @@ Complete deployment solution for monitoring 16 Axis cameras (VLAN 81: 12 cameras
 **Example Usage:**
 ```bash
 # Discover cameras
-./scripts/discover_axis_cameras.sh k8s/camera_list.txt root '***REDACTED_PASSWORD***' > k8s/discovered_cameras.json
+./scripts/discover_axis_cameras.sh k8s/camera_list.txt root 'YOUR_PASSWORD' > k8s/discovered_cameras.json
 
 # Generate config
-./scripts/generate_config.py k8s/discovered_cameras.json '***REDACTED_PASSWORD***' > k8s/agent.toml
+./scripts/generate_config.py k8s/discovered_cameras.json 'YOUR_PASSWORD' > k8s/agent.toml
 
 # Result: Full TOML config for all discovered camera feeds
 ```
@@ -71,8 +71,8 @@ resources:
 
 **`k8s/camera_list.txt`**
 ```
-10.45.81.1  - 10.45.81.12  (VLAN 81)
-10.45.82.1  - 10.45.82.2   (VLAN 82)
+192.168.1.1  - 192.168.1.12  (VLAN 81)
+192.168.2.1  - 192.168.2.2   (VLAN 82)
 ```
 
 Total: 14 cameras (may discover 20-30 feeds if cameras have multiple streams)
@@ -84,10 +84,10 @@ Total: 14 cameras (may discover 20-30 feeds if cameras have multiple streams)
 ```bash
 # 1. Discover cameras
 cd /Users/andrewsinclair/workspace/cvkitio/cvkit/edge
-./scripts/discover_axis_cameras.sh k8s/camera_list.txt root '***REDACTED_PASSWORD***' > k8s/discovered_cameras.json
+./scripts/discover_axis_cameras.sh k8s/camera_list.txt root 'YOUR_PASSWORD' > k8s/discovered_cameras.json
 
 # 2. Generate config
-./scripts/generate_config.py k8s/discovered_cameras.json '***REDACTED_PASSWORD***' > k8s/agent.toml
+./scripts/generate_config.py k8s/discovered_cameras.json 'YOUR_PASSWORD' > k8s/agent.toml
 
 # 3. Build and push image
 docker build -t your-registry/emd-agent:phase2-mvp --platform linux/amd64 .
@@ -183,8 +183,8 @@ See `k8s/RESOURCE_ANALYSIS.md` for detailed breakdown.
          │              │              │
          ▼              ▼              ▼
    [16 Cameras]   [NATS/MQTT]      [S3/MinIO]
-   10.45.81.x     (cluster)        (cluster)
-   10.45.82.x
+   192.168.1.x     (cluster)        (cluster)
+   192.168.2.x
 ```
 
 ## Monitoring

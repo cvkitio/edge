@@ -27,7 +27,7 @@ spec:
   resources:
     requests:
       storage: 100Gi
-  storageClassName: standard
+  storageClassName: local-path
 
 ---
 apiVersion: apps/v1
@@ -56,7 +56,7 @@ spec:
       containers:
       - name: emd-agent
         image: your-registry/emd-agent:phase2-mvp
-        imagePullPolicy: Always
+        imagePullPolicy: IfNotPresent
 
         # Resource limits (calculated for 16 cameras)
         resources:
@@ -125,14 +125,14 @@ spec:
         persistentVolumeClaim:
           claimName: emd-agent-data
 
-      # Scheduling
-      nodeSelector:
-        workload: camera-ingestion
-      tolerations:
-      - key: "workload"
-        operator: "Equal"
-        value: "camera-ingestion"
-        effect: "NoSchedule"
+      # Scheduling (nodeSelector removed for development cluster)
+      # nodeSelector:
+      #   workload: camera-ingestion
+      # tolerations:
+      # - key: "workload"
+      #   operator: "Equal"
+      #   value: "camera-ingestion"
+      #   effect: "NoSchedule"
 
 ---
 apiVersion: v1

@@ -21,10 +21,11 @@ COPY src/ ./src/
 COPY third_party/ ./third_party/
 COPY CMakeLists.txt ./
 
-# Build libemd
+# Build libemd (with relaxed warnings for Docker build)
 RUN cmake -S . -B build -G Ninja \
     -DCMAKE_BUILD_TYPE=Release \
-    -DCMAKE_C_FLAGS="-O3 -march=x86-64-v2" \
+    -DCMAKE_C_FLAGS="-O2 -D_POSIX_C_SOURCE=200809L -w" \
+    -DBUILD_TESTS=OFF \
     && cmake --build build --parallel \
     && mkdir -p /output/lib /output/include \
     && cp build/libemd.a /output/lib/ \
@@ -44,7 +45,7 @@ WORKDIR /build
 COPY --from=libemd-builder /output /build/third_party/libemd
 
 # Copy Go source
-COPY go.mod ./
+COPY go.mod go.sum ./
 COPY cmd/ ./cmd/
 COPY internal/ ./internal/
 

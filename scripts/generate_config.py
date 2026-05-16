@@ -114,7 +114,7 @@ if __name__ == "__main__":
         print("Usage: generate_config.py <cameras.json> <password>", file=sys.stderr)
         print("", file=sys.stderr)
         print("Example:", file=sys.stderr)
-        print("  ./generate_config.py cameras.json '***REDACTED_PASSWORD***' > agent.toml", file=sys.stderr)
+        print("  ./generate_config.py cameras.json 'YOUR_PASSWORD' > agent.toml", file=sys.stderr)
         sys.exit(1)
 
     generate_toml(sys.argv[1], sys.argv[2])

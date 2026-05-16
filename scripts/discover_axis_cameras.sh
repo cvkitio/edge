@@ -15,8 +15,8 @@ if [ $# -lt 3 ]; then
     echo "Usage: $0 <ip_list_file> <username> <password>"
     echo ""
     echo "Example:"
-    echo "  echo '10.45.81.1' > cameras.txt"
-    echo "  echo '10.45.81.2' >> cameras.txt"
+    echo "  echo '192.168.1.1' > cameras.txt"
+    echo "  echo '192.168.1.2' >> cameras.txt"
     echo "  $0 cameras.txt root 'password'"
     exit 1
 fi

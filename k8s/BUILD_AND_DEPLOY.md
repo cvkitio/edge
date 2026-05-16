@@ -13,7 +13,7 @@
 cd /Users/andrewsinclair/workspace/cvkitio/cvkit/edge
 
 # Discover all cameras and their available feeds
-./scripts/discover_axis_cameras.sh k8s/camera_list.txt root '***REDACTED_PASSWORD***' > k8s/discovered_cameras.json
+./scripts/discover_axis_cameras.sh k8s/camera_list.txt root 'YOUR_PASSWORD' > k8s/discovered_cameras.json
 
 # Review discovered feeds
 cat k8s/discovered_cameras.json | jq '.'
@@ -24,9 +24,9 @@ Expected output:
 {
   "cameras": [
     {
-      "ip": "10.45.81.1",
+      "ip": "192.168.1.1",
       "path": "/axis-media/media.amp",
-      "url": "rtsp://root:PASSWORD@10.45.81.1/axis-media/media.amp",
+      "url": "rtsp://root:PASSWORD@192.168.1.1/axis-media/media.amp",
       "codec": "h264",
       "width": 1920,
       "height": 1080,
@@ -41,7 +41,7 @@ Expected output:
 
 ```bash
 # Generate agent.toml from discovered cameras
-./scripts/generate_config.py k8s/discovered_cameras.json '***REDACTED_PASSWORD***' > k8s/agent.toml
+./scripts/generate_config.py k8s/discovered_cameras.json 'YOUR_PASSWORD' > k8s/agent.toml
 
 # Review generated config
 head -50 k8s/agent.toml
@@ -134,7 +134,7 @@ kubectl apply -f k8s/deployment.yaml
 
 ```bash
 # Update config
-./scripts/generate_config.py k8s/discovered_cameras.json '***REDACTED_PASSWORD***' > k8s/agent.toml
+./scripts/generate_config.py k8s/discovered_cameras.json 'YOUR_PASSWORD' > k8s/agent.toml
 
 # Replace configmap
 kubectl create configmap emd-agent-config \

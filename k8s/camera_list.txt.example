@@ -1,0 +1,7 @@
+# Camera IP list for discovery script
+# One IP address per line
+# Example:
+
+192.168.1.101
+192.168.1.102
+192.168.1.103

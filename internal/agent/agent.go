@@ -1,16 +1,4 @@
 // Package agent implements the Phase 2 Go supervisor.
-//
-// For now, this is a minimal MVP that runs a single camera from a hardcoded
-// config to demonstrate the ABI boundary works. Full Phase 2 features will
-// be added incrementally:
-//  - TOML config parsing
-//  - Multi-camera support
-//  - NATS/MQTT publishing
-//  - S3 upload
-//  - Outbox
-//  - Gate rules
-//  - Control plane
-//  - Metrics/traces
 
 package agent
 
@@ -18,6 +6,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"sync"
 
 	"github.com/cvkitio/cvkit/edge/emd-agent/internal/libemd"
 )
@@ -26,47 +15,45 @@ import (
 const Version = "1.0.0-phase2-mvp"
 
 // Run is the main supervisor entry point.
-// For now, it just runs a single hardcoded camera to prove the ABI works.
+// Loads config from TOML and runs all configured cameras.
 func Run(ctx context.Context, configPath string) error {
 	log.Printf("supervisor starting (config=%s)", configPath)
 
-	// For MVP, use a hardcoded camera config
-	// TODO: parse TOML config from configPath
-	cfg := &libemd.CameraConfig{
-		Name:            "video_file_test",
-		URL:             "rtsp://localhost:8554/test",
-		CamID:           0,
-		Transport:       0, // TCP
-		CodecHint:       1, // H.264
-		BufferSeconds:   15,
-		PreRollSeconds:  6,
-		PostRollSeconds: 10,
-		ClipMaxSeconds:  120,
-		MaxBitrateBPS:   8000000,
-		MotionZHigh:     3.0,
-		IntraRatioHigh:  2.5,
-		OnThreshold:     2,
-		OffThreshold:    10, // Lower threshold for video file testing
-		GradualEnabled:  false,
+	// Load configuration
+	cfg, err := LoadConfig(configPath)
+	if err != nil {
+		return fmt.Errorf("load config: %w", err)
 	}
 
-	// Create event and stats channels
-	eventCh := make(chan libemd.Event, 100)
+	log.Printf("loaded %d cameras from config", len(cfg.Cameras))
+
+	// Create global event and stats channels
+	eventCh := make(chan libemd.Event, 1000)  // Buffer for all cameras
 	statsCh := make(chan libemd.StatsSample, 100)
 
-	// Spawn camera worker in a goroutine
+	// Track camera workers
+	var wg sync.WaitGroup
 	stopCh := make(chan struct{})
-	errCh := make(chan error, 1)
 
-	go func() {
-		err := libemd.RunCameraWorker(cfg, eventCh, statsCh, stopCh)
-		if err != nil {
-			log.Printf("camera worker error: %v", err)
-		}
-		errCh <- err
-	}()
+	// Spawn a worker for each camera
+	camID := uint16(0)
+	for name, camCfg := range cfg.Cameras {
+		libCfg := camCfg.ToLibemdConfig(name, camID)
+		camID++
 
-	// Event processor (just logs for now)
+		wg.Add(1)
+		go func(cfg *libemd.CameraConfig) {
+			defer wg.Done()
+			err := libemd.RunCameraWorker(cfg, eventCh, statsCh, stopCh)
+			if err != nil {
+				log.Printf("camera %s worker error: %v", cfg.Name, err)
+			}
+		}(libCfg)
+
+		log.Printf("started camera worker: %s (cam_id=%d)", name, libCfg.CamID)
+	}
+
+	// Event processor
 	go func() {
 		for {
 			select {
@@ -83,18 +70,14 @@ func Run(ctx context.Context, configPath string) error {
 		}
 	}()
 
-	// Wait for shutdown signal or camera error
-	select {
-	case <-ctx.Done():
-		log.Printf("supervisor shutting down")
-		close(stopCh)
-		// Wait for camera worker to exit
-		<-errCh
-		return nil
-	case err := <-errCh:
-		if err != nil {
-			return fmt.Errorf("camera worker failed: %w", err)
-		}
-		return nil
-	}
+	// Wait for shutdown signal
+	<-ctx.Done()
+	log.Printf("supervisor shutting down")
+	close(stopCh)
+
+	// Wait for all camera workers to exit
+	wg.Wait()
+	log.Printf("all camera workers stopped")
+
+	return nil
 }

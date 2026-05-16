@@ -1,0 +1,56 @@
+# emd-agent configuration example
+# Copy this to agent.toml and update with your camera details
+
+[agent]
+mode              = "single"
+instance_id       = "cluster-01"
+data_dir          = "/var/lib/emd-agent"
+sd_notify         = false
+
+[runtime]
+log_level         = "info"
+clip_root         = "/var/lib/emd-agent/clips"
+inflight_root     = "/var/lib/emd-agent/inflight"
+
+[recording]
+container         = "mpegts"
+fsync_policy      = "on_close"
+
+[disk]
+max_bytes_per_camera = 2_000_000_000
+retention_days       = 7
+
+# Camera configuration examples
+# Replace with your actual camera URLs, IPs, and credentials
+
+[cameras.camera_1]
+url               = "rtsp://username:password@192.168.1.101/axis-media/media.amp?videocodec=h264"
+transport         = "tcp"
+codec_hint        = "h264"
+buffer_seconds    = 20
+pre_roll_seconds  = 6
+post_roll_seconds = 10
+clip_max_seconds  = 120
+motion_z_high     = 3.0
+intra_ratio_high  = 2.5
+on_threshold      = 2
+off_threshold     = 15
+gradual_enabled   = false
+max_bitrate_bps   = 8000000
+
+[cameras.camera_2]
+url               = "rtsp://username:password@192.168.1.102/axis-media/media.amp?videocodec=h264"
+transport         = "tcp"
+codec_hint        = "h264"
+buffer_seconds    = 20
+pre_roll_seconds  = 6
+post_roll_seconds = 10
+clip_max_seconds  = 120
+motion_z_high     = 3.0
+intra_ratio_high  = 2.5
+on_threshold      = 2
+off_threshold     = 15
+gradual_enabled   = false
+max_bitrate_bps   = 8000000
+
+# Add more cameras as needed...
