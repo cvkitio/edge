@@ -147,3 +147,29 @@ func parseZScore(reason string) float64 {
 	fmt.Sscanf(reason, "z=%f", &z)
 	return z
 }
+
+// GetCamera returns a camera handle by name.
+func (r *RecorderWorker) GetCamera(name string) (*libemd.Camera, bool) {
+	r.camerasMux.RLock()
+	defer r.camerasMux.RUnlock()
+	cam, ok := r.cameras[name]
+	return cam, ok
+}
+
+// UpdateInspectorConfig updates the inspector configuration for a camera.
+func (r *RecorderWorker) UpdateInspectorConfig(camName string, cfg *libemd.InspectorConfig) error {
+	cam, ok := r.GetCamera(camName)
+	if !ok {
+		return fmt.Errorf("camera %s not found", camName)
+	}
+	return cam.UpdateInspectorConfig(cfg)
+}
+
+// GetInspectorConfig gets the current inspector configuration for a camera.
+func (r *RecorderWorker) GetInspectorConfig(camName string) (*libemd.InspectorConfig, error) {
+	cam, ok := r.GetCamera(camName)
+	if !ok {
+		return nil, fmt.Errorf("camera %s not found", camName)
+	}
+	return cam.GetInspectorConfig()
+}

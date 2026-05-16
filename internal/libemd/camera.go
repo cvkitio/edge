@@ -166,3 +166,72 @@ func RunCameraWorker(cfg *CameraConfig, eventCh chan<- Event, statsCh chan<- Sta
 
 	return cam.Run()
 }
+
+// InspectorConfig represents the motion detection configuration parameters.
+type InspectorConfig struct {
+	MotionZHigh          float64
+	IntraRatioHigh       float64
+	OnThreshold          uint8
+	OffThreshold         uint8
+	BPFFloor             float64
+	ConfiguredPeriodicKF bool
+	GradualEnabled       bool
+	GradualThreshold     float64
+	GradualWindowFrames  uint32
+}
+
+// UpdateInspectorConfig updates the inspector configuration for a running camera.
+// Changes take effect immediately (next frame processed).
+// Thread-safe.
+func (c *Camera) UpdateInspectorConfig(cfg *InspectorConfig) error {
+	if c.handle == nil {
+		return fmt.Errorf("camera is closed")
+	}
+
+	cCfg := C.emd_inspector_cfg_t{
+		motion_z_high:           C.double(cfg.MotionZHigh),
+		intra_ratio_high:        C.double(cfg.IntraRatioHigh),
+		on_threshold:            C.uint8_t(cfg.OnThreshold),
+		off_threshold:           C.uint8_t(cfg.OffThreshold),
+		bpf_floor:               C.double(cfg.BPFFloor),
+		configured_periodic_kf:  C.bool(cfg.ConfiguredPeriodicKF),
+		gradual_enabled:         C.bool(cfg.GradualEnabled),
+		gradual_threshold:       C.double(cfg.GradualThreshold),
+		gradual_window_frames:   C.uint32_t(cfg.GradualWindowFrames),
+	}
+
+	ret := C.emd_cam_update_inspector_cfg(c.handle, &cCfg)
+	if ret != 0 {
+		return fmt.Errorf("invalid configuration parameters")
+	}
+
+	return nil
+}
+
+// GetInspectorConfig retrieves the current inspector configuration.
+// Thread-safe.
+func (c *Camera) GetInspectorConfig() (*InspectorConfig, error) {
+	if c.handle == nil {
+		return nil, fmt.Errorf("camera is closed")
+	}
+
+	var cCfg C.emd_inspector_cfg_t
+	ret := C.emd_cam_get_inspector_cfg(c.handle, &cCfg)
+	if ret != 0 {
+		return nil, fmt.Errorf("failed to get config")
+	}
+
+	cfg := &InspectorConfig{
+		MotionZHigh:          float64(cCfg.motion_z_high),
+		IntraRatioHigh:       float64(cCfg.intra_ratio_high),
+		OnThreshold:          uint8(cCfg.on_threshold),
+		OffThreshold:         uint8(cCfg.off_threshold),
+		BPFFloor:             float64(cCfg.bpf_floor),
+		ConfiguredPeriodicKF: bool(cCfg.configured_periodic_kf),
+		GradualEnabled:       bool(cCfg.gradual_enabled),
+		GradualThreshold:     float64(cCfg.gradual_threshold),
+		GradualWindowFrames:  uint32(cCfg.gradual_window_frames),
+	}
+
+	return cfg, nil
+}

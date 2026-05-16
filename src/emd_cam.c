@@ -25,6 +25,7 @@
 #include <stdatomic.h>
 #include <time.h>
 #include <unistd.h>
+#include <pthread.h>
 
 /* ---------------------------------------------------------------------------
  * Version functions
@@ -137,6 +138,9 @@ struct emd_cam {
     size_t              pps_len;
     uint8_t             vps_data[256];  /* H.265 only */
     size_t              vps_len;
+
+    /* Config update mutex */
+    pthread_mutex_t     cfg_mutex;
 
     /* Stop flag */
     _Atomic bool        stop_requested;
@@ -393,6 +397,14 @@ emd_cam_t *emd_cam_open(const emd_camera_cfg_t *cfg,
     cam->nal_ctx.insp_cfg.off_threshold    = cfg->off_threshold > 0 ? cfg->off_threshold : 45;
     emd_inspector_init(&cam->nal_ctx.insp_state, &cam->nal_ctx.insp_cfg);
 
+    /* Initialize config mutex */
+    if (pthread_mutex_init(&cam->cfg_mutex, NULL) != 0) {
+        if (errbuf) snprintf(errbuf, errbuf_len, "mutex init failed");
+        emd_ringbuf_free(cam->rb);
+        free(cam);
+        return NULL;
+    }
+
     atomic_init(&cam->stop_requested, false);
 
     char log_msg[256];
@@ -409,6 +421,8 @@ void emd_cam_close(emd_cam_t *cam)
     if (cam->depay265_inited) emd_h265_depay_free(&cam->depay265);
     if (cam->rtsp) emd_rtsp_client_free(cam->rtsp);
     if (cam->rb) emd_ringbuf_free(cam->rb);
+
+    pthread_mutex_destroy(&cam->cfg_mutex);
 
     char log_msg[256];
     snprintf(log_msg, sizeof(log_msg), "closed camera %s", cam->cfg.name);
@@ -642,5 +656,38 @@ int emd_cam_record(emd_cam_t *cam,
     hdr_out->duration_ms = (to_pts_90khz - from_pts_90khz) / 90;
 
     emd_ringbuf_snapshot_release(&snap);
+    return 0;
+}
+/* ---------------------------------------------------------------------------
+ * Runtime configuration updates
+ * ------------------------------------------------------------------------- */
+
+int emd_cam_update_inspector_cfg(emd_cam_t *cam, const emd_inspector_cfg_t *cfg)
+{
+    if (!cam || !cfg) return -1;
+
+    /* Validate parameters */
+    if (cfg->motion_z_high < 0.0 || cfg->intra_ratio_high < 0.0 ||
+        cfg->bpf_floor < 0.0 || cfg->gradual_threshold < 0.0) {
+        return -1;
+    }
+
+    /* Lock and update */
+    pthread_mutex_lock(&cam->cfg_mutex);
+    memcpy(&cam->nal_ctx.insp_cfg, cfg, sizeof(*cfg));
+    pthread_mutex_unlock(&cam->cfg_mutex);
+
+    return 0;
+}
+
+int emd_cam_get_inspector_cfg(emd_cam_t *cam, emd_inspector_cfg_t *cfg_out)
+{
+    if (!cam || !cfg_out) return -1;
+
+    /* Lock and read */
+    pthread_mutex_lock(&cam->cfg_mutex);
+    memcpy(cfg_out, &cam->nal_ctx.insp_cfg, sizeof(*cfg_out));
+    pthread_mutex_unlock(&cam->cfg_mutex);
+
     return 0;
 }

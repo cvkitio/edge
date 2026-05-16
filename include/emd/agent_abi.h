@@ -250,6 +250,47 @@ int emd_cam_record(emd_cam_t *cam,
                    emd_clip_header_t *hdr_out,
                    char *errbuf, size_t errbuf_len);
 
+/* ---------------------------------------------------------------------------
+ * Runtime configuration updates (§3.5)
+ * ------------------------------------------------------------------------- */
+
+/*
+ * Update the inspector configuration for a running camera.
+ *
+ * This allows adjusting motion detection sensitivity parameters at runtime
+ * without restarting the camera worker thread.
+ *
+ * cam     – camera handle
+ * cfg     – new inspector configuration; copied internally
+ *
+ * Thread-safe. Changes take effect immediately (next frame processed).
+ *
+ * Returns:
+ *    0  – success
+ *   -1  – invalid parameter (e.g., negative threshold)
+ *
+ * Example:
+ *   emd_inspector_cfg_t cfg;
+ *   emd_inspector_default_cfg(&cfg);
+ *   cfg.motion_z_high = 4.5;  // less sensitive
+ *   emd_cam_update_inspector_cfg(cam, &cfg);
+ */
+int emd_cam_update_inspector_cfg(emd_cam_t *cam, const emd_inspector_cfg_t *cfg);
+
+/*
+ * Get the current inspector configuration from a camera.
+ *
+ * cam     – camera handle
+ * cfg_out – filled with current configuration
+ *
+ * Thread-safe.
+ *
+ * Returns:
+ *    0  – success
+ *   -1  – invalid handle
+ */
+int emd_cam_get_inspector_cfg(emd_cam_t *cam, emd_inspector_cfg_t *cfg_out);
+
 #ifdef __cplusplus
 }
 #endif
