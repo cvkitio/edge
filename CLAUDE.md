@@ -7,7 +7,7 @@ This file gives Claude Code (and human contributors) the context needed to work 
 ## Codebase Overview
 
 - **Language:** Pure C11. No C++ anywhere in `src/` or `include/`. The ABI surface must stay C-compatible so plugins can be loaded with `dlopen`.
-- **Modules:** 16 modules (see table below), each with a narrow public header under `include/emd/`. Implementation files are in `src/`.
+- **Modules:** 19 core modules (see table below), each with a narrow public header under `include/emd/`. Implementation files are in `src/`. Phase 2 adds the `emd_cam` module and `agent_abi.h` for Go integration.
 - **Build system:** CMake ≥ 3.22, Ninja generator preferred. Out-of-tree builds only (`build/`). No in-tree `cmake .`.
 - **Binary output:** `build/emd` — static-PIE, typically 3–5 MB stripped.
 - **Test framework:** cmocka (Apache 2.0), vendored under `third_party/cmocka/`. Unit test sources live in `tests/`.
@@ -67,8 +67,11 @@ These are enforced by CI and will cause build failures if violated:
 | `emd_ringbuf` | `emd/ringbuf.h` | `emd_ringbuf_t`, `emd_nal_record_t`, `emd_ringbuf_snap_t` |
 | `emd_event` | `emd/event.h` | `emd_event_t`, `emd_event_bus_t`, `emd_event_bus_push/pop` |
 | `emd_recorder` | `emd/recorder.h` | `emd_recorder_pool_t`, `emd_mux_backend_t`, `emd_clip_header_t` |
+| `emd_mux_mpegts` | (internal) | MPEG-TS muxer implementation (used by recorder) |
+| `emd_mux_fmp4` | (internal) | fMP4 muxer implementation (used by recorder) |
 | `emd_mqtt` | `emd/mqtt.h` | `emd_mqtt_client_t`, `emd_mqtt_cfg_t`, `emd_mqtt_publish_str` |
 | `emd_supervisor` | `emd/supervisor.h` | `emd_supervisor_run`, `emd_sdnotify` |
+| `emd_cam` | `emd/agent_abi.h` | Phase 2: `emd_cam_t`, `emd_cam_open`, `emd_cam_update_inspector_cfg` |
 
 ---
 
@@ -145,20 +148,6 @@ cmake -S . -B build-msan \
     -DCMAKE_C_FLAGS="-fsanitize=memory -fno-omit-frame-pointer"
 cmake --build build-msan --parallel
 cd build-msan && ctest --output-on-failure
-```
-
-### Fuzz targets (Clang + libFuzzer)
-
-Fuzz target sources live in `tests/fuzz/`. Build them with:
-
-```sh
-cmake -S . -B build-fuzz \
-    -DCMAKE_BUILD_TYPE=Debug \
-    -DCMAKE_C_COMPILER=clang \
-    -DCMAKE_C_FLAGS="-fsanitize=fuzzer,address,undefined"
-cmake --build build-fuzz --parallel
-# Run a single fuzz target for 60 seconds:
-build-fuzz/fuzz_h264_nal tests/fuzz/corpus/h264_nal/ -max_total_time=60
 ```
 
 ### Coverage report (gcovr)
