@@ -113,7 +113,7 @@ func main() {
 	}()
 
 	// Start API server
-	apiHandler := api.NewHandler(supervisor)
+	apiHandler := api.NewHandler(supervisor, cfg.Runtime.ClipRoot)
 	apiMux := http.NewServeMux()
 	apiHandler.RegisterRoutes(apiMux)
 
