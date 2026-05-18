@@ -12,12 +12,6 @@ const openAPISpec = `{
       "url": "https://github.com/cvkitio/cvkit"
     }
   },
-  "servers": [
-    {
-      "url": "http://localhost:8080",
-      "description": "Local development server"
-    }
-  ],
   "tags": [
     {
       "name": "Health",
