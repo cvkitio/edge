@@ -53,10 +53,12 @@ spec:
         prometheus.io/port: "9464"
         prometheus.io/path: "/metrics"
     spec:
+      imagePullSecrets:
+      - name: ghcr-secret
       containers:
       - name: emd-agent
-        image: emd-agent:latest
-        imagePullPolicy: IfNotPresent
+        image: ghcr.io/cvkitio/emd-agent:latest
+        imagePullPolicy: Always
 
         # Command to include API server
         args:
@@ -114,7 +116,7 @@ spec:
 
         readinessProbe:
           httpGet:
-            path: /readyz
+            path: /healthz
             port: 9464
           initialDelaySeconds: 10
           periodSeconds: 10

@@ -399,11 +399,22 @@ static int mpegts_write_nal(void *handle, const uint8_t *nal, size_t len,
     if (!ctx->pts_initialized) {
         ctx->first_pts = pts;
         ctx->pts_initialized = true;
+        /* Use stdout and flush immediately to ensure it appears in logs */
+        printf("[NORM_DEBUG] NEW CLIP: first_pts=%lu\n", (unsigned long)pts);
+        fflush(stdout);
     }
 
     /* Subtract first_pts to normalize timestamps to start from zero */
     uint64_t normalized_pts = pts - ctx->first_pts;
     uint64_t normalized_dts = dts - ctx->first_pts;
+
+    /* Log first NAL of each clip to verify normalization */
+    if (ctx->frames_since_pat == 0) {
+        printf("[NORM_DEBUG] FIRST NAL: pts=%lu dts=%lu norm_pts=%lu norm_dts=%lu\n",
+                (unsigned long)pts, (unsigned long)dts,
+                (unsigned long)normalized_pts, (unsigned long)normalized_dts);
+        fflush(stdout);
+    }
 
     /* Emit PAT/PMT every ~100 ms (~3 frames at 30 fps) */
     if (ctx->frames_since_pat >= 90) {

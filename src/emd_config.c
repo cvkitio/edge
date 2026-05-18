@@ -141,6 +141,67 @@ static int parse_camera(toml_table_t *cam_tbl, const char *cam_name,
     d = toml_bool_in(cam_tbl, "configured_periodic_kf");
     if (d.ok) cam->configured_periodic_kf = (bool)d.u.b;
 
+    d = toml_int_in(cam_tbl, "min_bytes_threshold");
+    if (d.ok) {
+        if (d.u.i < 0 || d.u.i > 10000000) {
+            snprintf(errbuf, eblen, "key=cameras.%s.min_bytes_threshold: out of range [0, 10000000]", cam_name);
+            return -1;
+        }
+        cam->min_bytes_threshold = (uint32_t)d.u.i;
+    }
+
+    d = toml_double_in(cam_tbl, "bpf_relative_floor");
+    if (d.ok) {
+        if (d.u.d < 0.0 || d.u.d > 100.0) {
+            snprintf(errbuf, eblen, "key=cameras.%s.bpf_relative_floor: out of range [0.0, 100.0]", cam_name);
+            return -1;
+        }
+        cam->bpf_relative_floor = d.u.d;
+    }
+
+    d = toml_double_in(cam_tbl, "z_high_warmup");
+    if (d.ok) {
+        if (d.u.d < 0.0 || d.u.d > 100.0) {
+            snprintf(errbuf, eblen, "key=cameras.%s.z_high_warmup: out of range [0.0, 100.0]", cam_name);
+            return -1;
+        }
+        cam->z_high_warmup = d.u.d;
+    }
+
+    d = toml_int_in(cam_tbl, "z_high_warmup_frames");
+    if (d.ok) {
+        if (d.u.i < 0 || d.u.i > 600) {
+            snprintf(errbuf, eblen, "key=cameras.%s.z_high_warmup_frames: out of range [0, 600]", cam_name);
+            return -1;
+        }
+        cam->z_high_warmup_frames = (uint16_t)d.u.i;
+    }
+
+    /* target_classes: string array → bitmask */
+    /* NOTE: Disabled - tomlc99 minimal parser doesn't support arrays.
+     * This feature is reserved for future implementation with a full TOML library.
+    toml_array_t *tc_arr = toml_array_in(cam_tbl, "target_classes");
+    if (tc_arr) {
+        int tc_n = toml_array_nelem(tc_arr);
+        for (int j = 0; j < tc_n; j++) {
+            toml_datum_t td = toml_string_at(tc_arr, j);
+            if (!td.ok) continue;
+            if (strcmp(td.u.s, "person")  == 0) cam->target_class_mask |= (uint8_t)(1u << 0);
+            else if (strcmp(td.u.s, "vehicle") == 0) cam->target_class_mask |= (uint8_t)(1u << 1);
+            else if (strcmp(td.u.s, "animal")  == 0) cam->target_class_mask |= (uint8_t)(1u << 2);
+            else if (strcmp(td.u.s, "other")   == 0) cam->target_class_mask |= (uint8_t)(1u << 7);
+            else {
+                snprintf(errbuf, eblen,
+                         "key=cameras.%s.target_classes: unknown class '%s' (known: person, vehicle, animal, other)",
+                         cam_name, td.u.s);
+                free(td.u.s);
+                return -1;
+            }
+            free(td.u.s);
+        }
+    }
+    */
+
     return 0;
 }
 
