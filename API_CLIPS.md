@@ -2,6 +2,18 @@
 
 The EMD Agent now includes a comprehensive API for browsing and playing recorded motion detection clips, along with an embedded web UI.
 
+## 📚 API Documentation
+
+**Interactive API Documentation:** [http://localhost:8080/docs](http://localhost:8080/docs)
+
+The agent includes embedded **Swagger UI** for interactive API exploration:
+- Browse all endpoints
+- View request/response schemas
+- Try API calls directly from the browser
+- Download OpenAPI 3.0 specification
+
+**OpenAPI Spec:** [http://localhost:8080/docs/openapi.json](http://localhost:8080/docs/openapi.json)
+
 ## API Endpoints
 
 ### List Clips

@@ -78,6 +78,8 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/clips", h.handleClipsList)
 	mux.HandleFunc("/api/clips/", h.handleClipFile)
 	mux.HandleFunc("/health", h.handleHealth)
+	mux.HandleFunc("/docs/openapi.json", h.handleOpenAPISpec)
+	mux.HandleFunc("/docs", h.handleSwaggerUI)
 	mux.HandleFunc("/", h.handleWebUI)
 }
 
@@ -452,6 +454,29 @@ func (h *Handler) handleWebUI(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Write([]byte(webUIHTML))
+}
+
+// handleOpenAPISpec serves the OpenAPI 3.0 specification as JSON.
+func (h *Handler) handleOpenAPISpec(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Access-Control-Allow-Origin", "*")
+	w.Write([]byte(openAPISpec))
+}
+
+// handleSwaggerUI serves the Swagger UI for API documentation.
+func (h *Handler) handleSwaggerUI(w http.ResponseWriter, r *http.Request) {
+	if r.URL.Path != "/docs" && r.URL.Path != "/docs/" {
+		http.NotFound(w, r)
+		return
+	}
+
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.Write([]byte(swaggerUIHTML))
 }
 
 // webUIHTML is the embedded web UI for browsing and playing clips.
