@@ -36,8 +36,9 @@ ffmpeg: could not find codec parameters
 ## Future Enhancements
 
 ### Security
-- [ ] Rotate/revoke GitHub token after deployment (***REDACTED_GITHUB_TOKEN***)
+- [ ] Rotate/revoke GitHub token after deployment (token removed for security)
 - [ ] Use sealed secrets or external secrets operator for production
+- [ ] Review and rotate camera credentials if they were exposed in git history
 
 ### MPEG-TS Muxer
 - [ ] Remove debug logging once playback is fully validated
