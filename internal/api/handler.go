@@ -529,8 +529,9 @@ func (h *Handler) handleHLSManifest(w http.ResponseWriter, r *http.Request, came
 		return
 	}
 
-	// Get clip duration (approximate from file size, assuming 2Mbps average bitrate)
-	durationSec := float64(fileInfo.Size()) * 8 / (2 * 1024 * 1024)
+	// Get clip duration (approximate from file size, assuming 3Mbps average bitrate)
+	// Cameras configured for 8Mbps max, but motion clips average ~3Mbps
+	durationSec := float64(fileInfo.Size()) * 8 / (3 * 1024 * 1024)
 	if durationSec < 1 {
 		durationSec = 8.0 // Default to 8 seconds
 	}
