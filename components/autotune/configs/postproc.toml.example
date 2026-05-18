@@ -1,0 +1,39 @@
+# cvkit-postproc configuration example
+# Copy to postproc.toml and edit for your deployment.
+
+[nats]
+url            = "nats://127.0.0.1:4222"
+subject_prefix = "events"
+durable_name   = "postproc-1"
+max_ack_pending = 256
+# creds_file   = "/etc/cvkit/nats.creds"   # NATS JWT credentials (optional)
+
+[gate]
+enabled               = true
+ssim_skip_threshold   = 0.985   # suppress if SSIM vs baseline > this
+bg_min_area_pct       = 0.10    # suppress if BG-sub change area < this fraction
+class_min_conf        = 0.55    # minimum detection confidence to confirm
+deadline_ms           = 5000    # per-event hard deadline; fail-open on timeout
+
+[model]
+backend    = "onnxruntime"                    # onnxruntime | huggingface | openrouter
+model_path = "/opt/cvkit/models/yolov8n-int8.onnx"
+batch_size = 4
+# gpu      = "cuda:0"                        # omit for CPU; "metal" on darwin
+
+[s3]
+enabled       = true
+endpoint      = "https://s3.us-west-2.amazonaws.com"
+bucket        = "cvkit-clips-prod"
+key_template  = "{site}/{camera}/{date}/{event_id}.ts"
+storage_class = "STANDARD_IA"
+sse           = "AES256"
+
+[obs]
+metrics_addr = "0.0.0.0:9465"
+log_level    = "info"    # debug | info | warn | error
+
+# Map site IDs to edge agent base URLs.
+# The post-processor uses these to fetch /api/clips/{id} and /thumbs.
+[edge.bridges]
+# "site-warehouse-3" = "https://edge-3.internal:8443"

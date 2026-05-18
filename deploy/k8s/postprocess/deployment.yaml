@@ -1,0 +1,57 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: postprocess
+  namespace: cvkit
+  labels:
+    app: postprocess
+    component: postprocess
+spec:
+  replicas: 1   # scale up for parallel processing
+  selector:
+    matchLabels:
+      app: postprocess
+  template:
+    metadata:
+      labels:
+        app: postprocess
+        component: postprocess
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+      containers:
+        - name: postprocess
+          image: ghcr.io/cvkitio/postprocess:latest
+          args:
+            - --config=/etc/postprocess/postprocess.toml
+          env:
+            - name: NATS_URL
+              value: "nats://nats.cvkit.svc.cluster.local:4222"
+            - name: POSTPROCESS_S3_ACCESS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: postprocess-s3-credentials
+                  key: access-key
+                  optional: true
+            - name: POSTPROCESS_S3_SECRET_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: postprocess-s3-credentials
+                  key: secret-key
+                  optional: true
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+          volumeMounts:
+            - name: config
+              mountPath: /etc/postprocess
+              readOnly: true
+      volumes:
+        - name: config
+          configMap:
+            name: postprocess-config

@@ -1,0 +1,16 @@
+[nats]
+url = "nats://nats:4222"
+stream = "events"
+consumer = "postprocess"
+
+[pipeline]
+# Stages run in order. Comment out to disable.
+stages = ["s3"]
+
+[s3]
+endpoint = "https://s3.amazonaws.com"
+bucket   = "my-cvkit-clips"
+region   = "us-east-1"
+access_key = ""   # set via POSTPROCESS_S3_ACCESS_KEY env var
+secret_key = ""   # set via POSTPROCESS_S3_SECRET_KEY env var
+prefix   = "clips/"

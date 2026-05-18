@@ -1,0 +1,69 @@
+version: "3.9"
+
+# cvkit platform — local development stack
+# Runs all components with a shared NATS JetStream server.
+# Scaling: docker compose up --scale emd=2 --scale postprocess=3
+
+services:
+  nats:
+    image: nats:2.10-alpine
+    command: ["-js", "-m", "8222"]
+    ports:
+      - "4222:4222"
+      - "8222:8222"
+    volumes:
+      - nats-data:/data
+    healthcheck:
+      test: ["CMD", "nats-server", "--help"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
+  emd:
+    build:
+      context: ../../components/emd
+      dockerfile: Dockerfile
+    depends_on:
+      nats:
+        condition: service_healthy
+    environment:
+      EMD_NATS_URL: "nats://nats:4222"
+    volumes:
+      - emd-data:/var/lib/emd-agent
+      - ./configs/emd/agent.toml:/etc/emd-agent/agent.toml:ro
+    ports:
+      - "8080:8080"
+      - "9464:9464"
+    # Scale with: docker compose up --scale emd=N
+
+  autotune:
+    build:
+      context: ../../components/autotune
+      dockerfile: Dockerfile
+    depends_on:
+      nats:
+        condition: service_healthy
+    environment:
+      NATS_URL: "nats://nats:4222"
+    volumes:
+      - ./configs/autotune/tuner.yaml:/etc/autotune/tuner.yaml:ro
+    ports:
+      - "9465:9465"
+    # Scale with: docker compose up --scale autotune=N
+
+  postprocess:
+    build:
+      context: ../../components/postprocess
+      dockerfile: Dockerfile
+    depends_on:
+      nats:
+        condition: service_healthy
+    environment:
+      NATS_URL: "nats://nats:4222"
+    volumes:
+      - ./configs/postprocess/postprocess.toml:/etc/postprocess/postprocess.toml:ro
+    # Scale with: docker compose up --scale postprocess=N
+
+volumes:
+  nats-data:
+  emd-data:

@@ -1,0 +1,60 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: autotune
+  namespace: cvkit
+  labels:
+    app: autotune
+    component: autotune
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: autotune
+  template:
+    metadata:
+      labels:
+        app: autotune
+        component: autotune
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+      containers:
+        - name: autotune
+          image: ghcr.io/cvkitio/autotune:latest
+          args:
+            - --config=/etc/autotune/tuner.yaml
+          env:
+            - name: NATS_URL
+              value: "nats://nats.cvkit.svc.cluster.local:4222"
+          ports:
+            - name: metrics
+              containerPort: 9465
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+          volumeMounts:
+            - name: config
+              mountPath: /etc/autotune
+              readOnly: true
+      volumes:
+        - name: config
+          configMap:
+            name: autotune-config
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: autotune-metrics
+  namespace: cvkit
+spec:
+  selector:
+    app: autotune
+  ports:
+    - name: metrics
+      port: 9465

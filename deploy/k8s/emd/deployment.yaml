@@ -1,0 +1,94 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: emd-agent
+  namespace: cvkit
+  labels:
+    app: emd-agent
+    component: edge-motion-detector
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: emd-agent
+  template:
+    metadata:
+      labels:
+        app: emd-agent
+        component: edge-motion-detector
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        fsGroup: 1000
+      containers:
+        - name: emd-agent
+          image: ghcr.io/cvkitio/emd-agent:latest
+          args:
+            - --config=/etc/emd-agent/agent.toml
+            - --api=:8080
+            - --metrics=:9464
+          env:
+            - name: GOMAXPROCS
+              value: "8"
+            - name: GOMEMLIMIT
+              value: "7GiB"
+            - name: EMD_NATS_URL
+              value: "nats://nats.cvkit.svc.cluster.local:4222"
+          ports:
+            - name: api
+              containerPort: 8080
+            - name: metrics
+              containerPort: 9464
+          resources:
+            requests:
+              cpu: 1000m
+              memory: 2Gi
+            limits:
+              cpu: 4000m
+              memory: 6Gi
+          volumeMounts:
+            - name: config
+              mountPath: /etc/emd-agent
+              readOnly: true
+            - name: data
+              mountPath: /var/lib/emd-agent
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+            initialDelaySeconds: 10
+            periodSeconds: 30
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            failureThreshold: 1
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: [ALL]
+      volumes:
+        - name: config
+          configMap:
+            name: emd-agent-config
+        - name: data
+          persistentVolumeClaim:
+            claimName: emd-agent-data
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: emd-agent-api
+  namespace: cvkit
+spec:
+  selector:
+    app: emd-agent
+  ports:
+    - name: api
+      port: 8080
+    - name: metrics
+      port: 9464
