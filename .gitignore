@@ -20,3 +20,7 @@ configs/*.toml
 
 # Docker artifacts
 *.tar
+
+# Environment variables (secrets)
+.env
+.env.local
