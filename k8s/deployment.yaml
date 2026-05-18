@@ -55,17 +55,28 @@ spec:
     spec:
       containers:
       - name: emd-agent
-        image: your-registry/emd-agent:phase2-mvp
+        image: emd-agent:latest
         imagePullPolicy: IfNotPresent
 
-        # Resource limits (calculated for 16 cameras)
+        # Command to include API server
+        args:
+        - "--config"
+        - "/etc/emd-agent/agent.toml"
+        - "--api"
+        - ":8080"
+        - "--metrics"
+        - ":9464"
+        - "--pprof"
+        - "localhost:6060"
+
+        # Resource limits (adjusted for development cluster)
         resources:
           requests:
-            cpu: "4000m"      # 4 cores (250m per camera baseline)
-            memory: "4Gi"     # 4 GB (250Mi per camera)
+            cpu: "1000m"      # 1 core (development/testing)
+            memory: "2Gi"     # 2 GB (14 cameras)
           limits:
-            cpu: "8000m"      # 8 cores (burst capacity)
-            memory: "8Gi"     # 8 GB (2x overhead)
+            cpu: "4000m"      # 4 cores (burst capacity)
+            memory: "6Gi"     # 6 GB (overhead for 14 cameras)
 
         # Environment
         env:
@@ -86,6 +97,9 @@ spec:
         ports:
         - name: metrics
           containerPort: 9464
+          protocol: TCP
+        - name: api
+          containerPort: 8080
           protocol: TCP
 
         # Health checks
@@ -147,6 +161,28 @@ spec:
   selector:
     app: emd-agent
   ports:
+  - name: metrics
+    port: 9464
+    targetPort: 9464
+    protocol: TCP
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: emd-agent-api
+  namespace: emd
+  labels:
+    app: emd-agent
+spec:
+  type: ClusterIP
+  selector:
+    app: emd-agent
+  ports:
+  - name: api
+    port: 8080
+    targetPort: 8080
+    protocol: TCP
   - name: metrics
     port: 9464
     targetPort: 9464

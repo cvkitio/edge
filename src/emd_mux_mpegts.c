@@ -31,7 +31,7 @@
 
 #define PID_PAT         0x0000u
 #define PID_PMT         0x0100u
-#define PID_VIDEO       0x0101u
+#define PID_VIDEO       0x0100u  /* Same as PMT - ES PID reuses program PID */
 
 #define STREAM_TYPE_AVC  0x1Bu
 #define STREAM_TYPE_HEVC 0x24u
@@ -69,6 +69,8 @@ typedef struct {
     uint32_t frames_since_pat;
     uint32_t frames_since_pcr;
     uint64_t last_pcr_pts;
+    uint64_t first_pts;      /* First PTS for timestamp normalization */
+    bool     pts_initialized;
 } mpegts_ctx_t;
 
 /* ---------------------------------------------------------------------- */
@@ -198,9 +200,10 @@ static int emit_pmt(mpegts_ctx_t *ctx) {
     uint8_t sec[32];
     size_t  sp = 0;
     sec[sp++] = 0x02u;   /* table_id = PMT */
-    /* section_length = 13 (no ES descriptors) */
+    /* section_length will be filled in later */
+    size_t len_pos = sp;
     sec[sp++] = 0xB0u | 0x00u;
-    sec[sp++] = 13u;
+    sec[sp++] = 0;  /* placeholder */
     sec[sp++] = 0x00u; sec[sp++] = 0x01u; /* program_number = 1 */
     sec[sp++] = 0xC1u;                      /* version=0, current=1 */
     sec[sp++] = 0x00u;                      /* section_number */
@@ -217,6 +220,13 @@ static int emit_pmt(mpegts_ctx_t *ctx) {
     sec[sp++] = (uint8_t)(PID_VIDEO & 0xFFu);
     sec[sp++] = 0xF0u; /* ES_info_length high */
     sec[sp++] = 0x00u; /* ES_info_length low */
+
+    /* Calculate section_length: everything from after the length field to end, including CRC (4 bytes) */
+    /* sp is currently at the position before CRC, so section_length = sp - 3 + 4 (for CRC) */
+    size_t section_length = sp - 3 + 4;
+    sec[len_pos] = 0xB0u | (uint8_t)((section_length >> 8) & 0x0Fu);
+    sec[len_pos + 1] = (uint8_t)(section_length & 0xFFu);
+
     /* CRC */
     uint32_t crc = crc32_mpeg(sec, sp);
     sec[sp++] = (uint8_t)(crc >> 24);
@@ -258,9 +268,8 @@ static int emit_nal(mpegts_ctx_t *ctx,
     pes[pp++] = 0x00u; pes[pp++] = 0x00u; pes[pp++] = 0x01u; /* start code */
     pes[pp++] = PES_STREAM_VIDEO;
     pes[pp++] = 0x00u; pes[pp++] = 0x00u; /* PES packet length = 0 (unbounded) */
-    pes[pp++] = 0x84u; /* marker=10, scrambling=00, prio=0, align=0, copyright=0, original=1 wait — 0x80 is standard */
-    /* flags byte 1: marker bits */
-    pes[pp - 1] = 0x80u;
+    /* flags byte 1: marker=10, scrambling=00, priority=0, data_alignment=1, copyright=0, original=0 */
+    pes[pp++] = 0x84u;  /* 0x84 = 10000100 binary, sets data_alignment_indicator */
     /* flags byte 2: PTS_DTS_flags */
     pes[pp++] = pts_dts_same ? 0x80u : 0xC0u;
     /* PES_header_data_length */
@@ -308,7 +317,7 @@ static int emit_nal(mpegts_ctx_t *ctx,
         uint64_t pcr_val = 0;
         if (is_keyframe && first) {
             has_pcr = true;
-            pcr_val = pts;
+            pcr_val = dts;  /* PCR must align with DTS, not PTS */
         }
 
         /* How much payload fits in this TS packet? */
@@ -386,6 +395,16 @@ static int mpegts_write_nal(void *handle, const uint8_t *nal, size_t len,
     mpegts_ctx_t *ctx = (mpegts_ctx_t *)handle;
     if (!ctx || !nal || len == 0) return -1;
 
+    /* Normalize timestamps: capture first PTS and subtract it from all timestamps */
+    if (!ctx->pts_initialized) {
+        ctx->first_pts = pts;
+        ctx->pts_initialized = true;
+    }
+
+    /* Subtract first_pts to normalize timestamps to start from zero */
+    uint64_t normalized_pts = pts - ctx->first_pts;
+    uint64_t normalized_dts = dts - ctx->first_pts;
+
     /* Emit PAT/PMT every ~100 ms (~3 frames at 30 fps) */
     if (ctx->frames_since_pat >= 90) {
         emit_pat(ctx);
@@ -394,7 +413,7 @@ static int mpegts_write_nal(void *handle, const uint8_t *nal, size_t len,
     }
     ctx->frames_since_pat++;
 
-    return emit_nal(ctx, nal, len, pts, dts, is_keyframe);
+    return emit_nal(ctx, nal, len, normalized_pts, normalized_dts, is_keyframe);
 }
 
 static int mpegts_close(void *handle) {

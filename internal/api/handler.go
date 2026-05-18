@@ -4,9 +4,11 @@ package api
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -331,15 +333,24 @@ func (h *Handler) scanClips(cameraFilter string) ([]ClipInfo, error) {
 
 			// Only include video clip files
 			ext := filepath.Ext(path)
-			if ext == ".ts" || ext == ".mp4" || ext == ".mkv" {
+			if ext == ".ts" || ext == ".mpegts" || ext == ".mp4" || ext == ".fmp4" || ext == ".mkv" {
 				filename := filepath.Base(path)
+
+				// For MPEG-TS files, expose via .m3u8 HLS manifest
+				displayFilename := filename
+				urlPath := filename
+				if ext == ".mpegts" || ext == ".ts" {
+					// Display original filename but URL points to .m3u8
+					urlPath = strings.TrimSuffix(filename, ext) + ".m3u8"
+				}
+
 				clips = append(clips, ClipInfo{
 					Camera:   cameraName,
-					Filename: filename,
+					Filename: displayFilename,
 					Path:     path,
 					Size:     info.Size(),
 					ModTime:  info.ModTime(),
-					URL:      fmt.Sprintf("/api/clips/%s/%s", cameraName, filename),
+					URL:      fmt.Sprintf("/api/clips/%s/%s", cameraName, urlPath),
 				})
 			}
 
@@ -384,6 +395,24 @@ func (h *Handler) handleClipFile(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Handle HLS manifest requests (.m3u8)
+	if strings.HasSuffix(filename, ".m3u8") {
+		h.handleHLSManifest(w, r, camera, filename)
+		return
+	}
+
+	// Handle MP4 conversion requests (request .mp4 for a .mpegts file)
+	if strings.HasSuffix(filename, ".mp4") {
+		baseName := strings.TrimSuffix(filename, ".mp4")
+		mpegtsFile := baseName + ".mpegts"
+		mpegtsPath := filepath.Join(h.clipRoot, camera, mpegtsFile)
+		if _, err := os.Stat(mpegtsPath); err == nil {
+			// MPEG-TS file exists, convert to MP4 on the fly
+			h.handleMpegtsToMp4(w, r, mpegtsPath, filename)
+			return
+		}
+	}
+
 	// Construct file path
 	filePath := filepath.Join(h.clipRoot, camera, filename)
 
@@ -419,9 +448,9 @@ func (h *Handler) handleClipFile(w http.ResponseWriter, r *http.Request) {
 	// Set appropriate headers for video streaming
 	ext := filepath.Ext(filename)
 	switch ext {
-	case ".ts":
+	case ".ts", ".mpegts":
 		w.Header().Set("Content-Type", "video/mp2t")
-	case ".mp4":
+	case ".mp4", ".fmp4":
 		w.Header().Set("Content-Type", "video/mp4")
 	case ".mkv":
 		w.Header().Set("Content-Type", "video/x-matroska")
@@ -429,9 +458,10 @@ func (h *Handler) handleClipFile(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/octet-stream")
 	}
 
-	// Enable range requests for seeking
+	// Enable range requests for seeking and CORS
 	w.Header().Set("Accept-Ranges", "bytes")
 	w.Header().Set("Cache-Control", "public, max-age=3600")
+	w.Header().Set("Access-Control-Allow-Origin", "*")
 
 	// Open file for ServeContent
 	file, err := os.Open(filePath)
@@ -443,6 +473,84 @@ func (h *Handler) handleClipFile(w http.ResponseWriter, r *http.Request) {
 
 	// Serve the file with range request support
 	http.ServeContent(w, r, filename, fileInfo.ModTime(), file)
+}
+
+// handleMpegtsToMp4 converts an MPEG-TS file to MP4 on-the-fly.
+func (h *Handler) handleMpegtsToMp4(w http.ResponseWriter, r *http.Request, mpegtsPath string, mp4Filename string) {
+	// Set headers for MP4 streaming
+	w.Header().Set("Content-Type", "video/mp4")
+	w.Header().Set("Cache-Control", "public, max-age=3600")
+	w.Header().Set("Access-Control-Allow-Origin", "*")
+
+	// Use ffmpeg to convert MPEG-TS to MP4 (remux only, no transcoding)
+	cmd := exec.Command("ffmpeg",
+		"-i", mpegtsPath,
+		"-c", "copy", // Copy streams without re-encoding
+		"-f", "mp4",
+		"-movflags", "frag_keyframe+empty_moov", // Enable streaming
+		"-",
+	)
+
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		http.Error(w, "Failed to start conversion", http.StatusInternalServerError)
+		return
+	}
+
+	if err := cmd.Start(); err != nil {
+		http.Error(w, "Failed to start conversion", http.StatusInternalServerError)
+		return
+	}
+
+	// Stream the output directly to the client
+	_, copyErr := io.Copy(w, stdout)
+	waitErr := cmd.Wait()
+
+	if copyErr != nil || waitErr != nil {
+		log.Printf("API: error converting %s: copy=%v wait=%v", mpegtsPath, copyErr, waitErr)
+	}
+}
+
+// handleHLSManifest generates an HLS manifest for an MPEG-TS clip.
+func (h *Handler) handleHLSManifest(w http.ResponseWriter, r *http.Request, camera string, manifestFilename string) {
+	// Extract the base filename (remove .m3u8 extension)
+	baseName := strings.TrimSuffix(manifestFilename, ".m3u8")
+	tsFilename := baseName + ".mpegts"
+
+	// Check if the .mpegts file exists
+	tsPath := filepath.Join(h.clipRoot, camera, tsFilename)
+	fileInfo, err := os.Stat(tsPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			http.Error(w, "Clip not found", http.StatusNotFound)
+		} else {
+			http.Error(w, "Internal error", http.StatusInternalServerError)
+		}
+		return
+	}
+
+	// Get clip duration (approximate from file size, assuming 2Mbps average bitrate)
+	durationSec := float64(fileInfo.Size()) * 8 / (2 * 1024 * 1024)
+	if durationSec < 1 {
+		durationSec = 8.0 // Default to 8 seconds
+	}
+
+	// Generate HLS VOD manifest with independent segments flag
+	manifest := fmt.Sprintf(`#EXTM3U
+#EXT-X-VERSION:3
+#EXT-X-PLAYLIST-TYPE:VOD
+#EXT-X-INDEPENDENT-SEGMENTS
+#EXT-X-TARGETDURATION:%d
+#EXTINF:%.2f,
+/api/clips/%s/%s
+#EXT-X-ENDLIST
+`, int(durationSec)+1, durationSec, camera, tsFilename)
+
+	w.Header().Set("Content-Type", "application/vnd.apple.mpegurl")
+	w.Header().Set("Cache-Control", "public, max-age=3600")
+	w.Header().Set("Access-Control-Allow-Origin", "*")
+	w.WriteHeader(http.StatusOK)
+	w.Write([]byte(manifest))
 }
 
 // handleWebUI serves the web UI.
@@ -646,6 +754,7 @@ const webUIHTML = `<!DOCTYPE html>
             opacity: 0.5;
         }
     </style>
+    <script src="https://cdn.jsdelivr.net/npm/hls.js@latest"></script>
 </head>
 <body>
     <div class="container">
@@ -759,14 +868,104 @@ const webUIHTML = `<!DOCTYPE html>
         }
 
         function playClip(clip) {
+            console.log('=== PLAYCLIP START ===');
+            console.log('clip object:', clip);
+
             currentClip = clip;
             const player = document.getElementById('videoPlayer');
             const section = document.getElementById('playerSection');
             const title = document.getElementById('playerTitle');
 
-            player.src = clip.url;
+            // Destroy any existing HLS instance
+            if (window.hls) {
+                console.log('Destroying previous HLS instance');
+                window.hls.destroy();
+                window.hls = null;
+            }
+
+            // Reset player
+            player.pause();
+            player.removeAttribute('src');
             player.load();
-            player.play();
+
+            console.log('Playing clip:', clip.filename);
+            console.log('URL:', clip.url);
+            console.log('typeof Hls:', typeof Hls);
+
+            // Check if this is an HLS manifest
+            const isHLS = clip.url.endsWith('.m3u8');
+            console.log('isHLS:', isHLS);
+            console.log('Hls.isSupported():', typeof Hls !== 'undefined' ? Hls.isSupported() : 'Hls not defined');
+
+            if (isHLS && typeof Hls !== 'undefined' && Hls.isSupported()) {
+                try {
+                    // Use hls.js for HLS streams
+                    console.log('>>> Using hls.js for HLS playback');
+
+                    window.hls = new Hls({
+                        debug: true,
+                        enableWorker: true,
+                        lowLatencyMode: false,
+                    });
+                    console.log('>>> Created HLS instance');
+
+                    // IMPORTANT: Attach media BEFORE loading source (recommended pattern)
+                    window.hls.attachMedia(player);
+                    console.log('>>> Attached media to player');
+
+                    window.hls.on(Hls.Events.MEDIA_ATTACHED, function() {
+                        console.log('>>> MEDIA_ATTACHED event fired');
+                        console.log('>>> Now loading source:', clip.url);
+                        window.hls.loadSource(clip.url);
+                    });
+
+                    window.hls.on(Hls.Events.MANIFEST_PARSED, function() {
+                        console.log('>>> HLS manifest parsed successfully');
+                        player.play().catch(e => console.error('>>> Play failed:', e));
+                    });
+
+                    window.hls.on(Hls.Events.ERROR, function(event, data) {
+                        console.error('>>> HLS.js error:', event, data);
+                        if (data.fatal) {
+                            alert('HLS Error: ' + data.type + ' - ' + data.details);
+                            switch(data.type) {
+                                case Hls.ErrorTypes.NETWORK_ERROR:
+                                    console.error('>>> Fatal network error, trying to recover');
+                                    window.hls.startLoad();
+                                    break;
+                                case Hls.ErrorTypes.MEDIA_ERROR:
+                                    console.error('>>> Fatal media error, trying to recover');
+                                    window.hls.recoverMediaError();
+                                    break;
+                                default:
+                                    console.error('>>> Unrecoverable error');
+                                    window.hls.destroy();
+                                    break;
+                            }
+                        }
+                    });
+
+                    window.hls.on(Hls.Events.FRAG_LOADED, function(event, data) {
+                        console.log('>>> Fragment loaded:', data.frag.url);
+                    });
+
+                } catch (e) {
+                    console.error('>>> Exception in HLS setup:', e);
+                    alert('Error setting up HLS: ' + e.message);
+                }
+            } else if (isHLS && player.canPlayType('application/vnd.apple.mpegurl')) {
+                // Safari native HLS support
+                console.log('Using Safari native HLS');
+                player.src = clip.url;
+                player.load();
+                player.play().catch(e => console.error('Play failed:', e));
+            } else {
+                // Direct playback for MP4 or other formats
+                console.log('Direct playback:', clip.url);
+                player.src = clip.url;
+                player.load();
+                player.play().catch(e => console.error('Play failed:', e));
+            }
 
             title.textContent = ` + "`Now Playing: ${clip.camera} - ${clip.filename}`" + `;
             section.classList.add('active');

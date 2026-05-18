@@ -32,7 +32,7 @@ RUN cmake -S . -B build -G Ninja \
     && cp -r include/emd /output/include/
 
 # Stage 2: Build Go agent
-FROM golang:1.22-bookworm AS go-builder
+FROM golang:1.23-bookworm AS go-builder
 
 # Install build dependencies
 RUN apt-get update && apt-get install -y \
