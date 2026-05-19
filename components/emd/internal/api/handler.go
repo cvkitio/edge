@@ -2,16 +2,21 @@
 package api
 
 import (
+	"bufio"
 	"encoding/json"
 	"fmt"
 	"io"
 	"log"
+	"math"
 	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
+	"sync"
+	"syscall"
 	"time"
 
 	"github.com/cvkitio/cvkit/edge/emd-agent/internal/agent"
@@ -21,6 +26,10 @@ import (
 type Handler struct {
 	supervisor *agent.Supervisor
 	clipRoot   string
+
+	cpuMu     sync.Mutex
+	cpuCached float64
+	cpuAt     time.Time
 }
 
 // NewHandler creates a new API handler.
@@ -73,12 +82,44 @@ type CameraListResponse struct {
 	Cameras []string `json:"cameras"`
 }
 
+// SystemStatsResponse is returned by GET /api/system.
+type SystemStatsResponse struct {
+	Disk   DiskStats   `json:"disk"`
+	Memory MemoryStats `json:"memory"`
+	CPU    CPUStats    `json:"cpu"`
+}
+
+// DiskStats describes the filesystem where clips are stored.
+type DiskStats struct {
+	Path        string  `json:"path"`
+	TotalBytes  uint64  `json:"total_bytes"`
+	UsedBytes   uint64  `json:"used_bytes"`
+	FreeBytes   uint64  `json:"free_bytes"`
+	UsedPercent float64 `json:"used_percent"`
+}
+
+// MemoryStats describes system RAM and Go heap usage.
+type MemoryStats struct {
+	TotalBytes  uint64  `json:"total_bytes"`
+	UsedBytes   uint64  `json:"used_bytes"`
+	FreeBytes   uint64  `json:"free_bytes"`
+	UsedPercent float64 `json:"used_percent"`
+	GoHeapBytes uint64  `json:"go_heap_bytes"`
+}
+
+// CPUStats describes CPU utilisation.
+type CPUStats struct {
+	UsedPercent float64 `json:"used_percent"`
+	NumCPU      int     `json:"num_cpu"`
+}
+
 // RegisterRoutes registers all API routes on the given mux.
 func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/cameras", h.handleCameras)
 	mux.HandleFunc("/api/cameras/", h.handleCameraConfig)
 	mux.HandleFunc("/api/clips", h.handleClipsList)
 	mux.HandleFunc("/api/clips/", h.handleClipFile)
+	mux.HandleFunc("/api/system", h.handleSystemStats)
 	mux.HandleFunc("/health", h.handleHealth)
 	mux.HandleFunc("/docs/openapi.json", h.handleOpenAPISpec)
 	mux.HandleFunc("/docs", h.handleSwaggerUI)
@@ -577,6 +618,167 @@ func (h *Handler) handleOpenAPISpec(w http.ResponseWriter, r *http.Request) {
 	w.Write([]byte(openAPISpec))
 }
 
+// handleSystemStats returns disk, memory, and CPU usage for the host.
+func (h *Handler) handleSystemStats(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	stats := SystemStatsResponse{
+		Disk:   h.getDiskStats(),
+		Memory: h.getMemoryStats(),
+		CPU:    h.getCPUStats(),
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(stats)
+}
+
+func (h *Handler) getDiskStats() DiskStats {
+	path := h.clipRoot
+	if path == "" {
+		path = "/"
+	}
+	var stat syscall.Statfs_t
+	if err := syscall.Statfs(path, &stat); err != nil {
+		log.Printf("statfs %s: %v", path, err)
+		return DiskStats{Path: path}
+	}
+	total := stat.Blocks * uint64(stat.Bsize) //nolint:unconvert
+	free := stat.Bavail * uint64(stat.Bsize)  //nolint:unconvert
+	used := total - free
+	var pct float64
+	if total > 0 {
+		pct = math.Round(float64(used)/float64(total)*1000) / 10
+	}
+	return DiskStats{
+		Path:        path,
+		TotalBytes:  total,
+		UsedBytes:   used,
+		FreeBytes:   free,
+		UsedPercent: pct,
+	}
+}
+
+func (h *Handler) getMemoryStats() MemoryStats {
+	var ms runtime.MemStats
+	runtime.ReadMemStats(&ms)
+
+	total, available := readProcMeminfo()
+	used := total - available
+	var pct float64
+	if total > 0 {
+		pct = math.Round(float64(used)/float64(total)*1000) / 10
+	}
+	return MemoryStats{
+		TotalBytes:  total,
+		UsedBytes:   used,
+		FreeBytes:   available,
+		UsedPercent: pct,
+		GoHeapBytes: ms.HeapAlloc,
+	}
+}
+
+// readProcMeminfo returns total and available bytes from /proc/meminfo.
+func readProcMeminfo() (total, available uint64) {
+	f, err := os.Open("/proc/meminfo")
+	if err != nil {
+		return 0, 0
+	}
+	defer f.Close()
+
+	scanner := bufio.NewScanner(f)
+	for scanner.Scan() {
+		line := scanner.Text()
+		var key string
+		var val uint64
+		if _, err := fmt.Sscanf(line, "%s %d kB", &key, &val); err != nil {
+			continue
+		}
+		switch key {
+		case "MemTotal:":
+			total = val * 1024
+		case "MemAvailable:":
+			available = val * 1024
+		}
+		if total > 0 && available > 0 {
+			break
+		}
+	}
+	return total, available
+}
+
+func (h *Handler) getCPUStats() CPUStats {
+	h.cpuMu.Lock()
+	if time.Since(h.cpuAt) < 10*time.Second {
+		pct := h.cpuCached
+		h.cpuMu.Unlock()
+		return CPUStats{UsedPercent: pct, NumCPU: runtime.NumCPU()}
+	}
+	h.cpuMu.Unlock()
+
+	pct := measureCPUPercent()
+
+	h.cpuMu.Lock()
+	h.cpuCached = pct
+	h.cpuAt = time.Now()
+	h.cpuMu.Unlock()
+
+	return CPUStats{UsedPercent: pct, NumCPU: runtime.NumCPU()}
+}
+
+type cpuSample struct {
+	user, nice, system, idle, iowait, irq, softirq, steal uint64
+}
+
+func readCPUSample() (cpuSample, error) {
+	f, err := os.Open("/proc/stat")
+	if err != nil {
+		return cpuSample{}, err
+	}
+	defer f.Close()
+
+	var s cpuSample
+	var label string
+	scanner := bufio.NewScanner(f)
+	if scanner.Scan() {
+		_, err = fmt.Sscanf(scanner.Text(), "%s %d %d %d %d %d %d %d %d",
+			&label, &s.user, &s.nice, &s.system, &s.idle,
+			&s.iowait, &s.irq, &s.softirq, &s.steal)
+		if err != nil {
+			return cpuSample{}, err
+		}
+	}
+	return s, nil
+}
+
+// measureCPUPercent reads /proc/stat twice 200 ms apart and returns usage %.
+// The result is cached for 10 s so the overhead only hits the first caller.
+func measureCPUPercent() float64 {
+	s1, err := readCPUSample()
+	if err != nil {
+		return 0
+	}
+	time.Sleep(200 * time.Millisecond)
+	s2, err := readCPUSample()
+	if err != nil {
+		return 0
+	}
+
+	idle1 := s1.idle + s1.iowait
+	total1 := s1.user + s1.nice + s1.system + s1.idle + s1.iowait + s1.irq + s1.softirq + s1.steal
+	idle2 := s2.idle + s2.iowait
+	total2 := s2.user + s2.nice + s2.system + s2.idle + s2.iowait + s2.irq + s2.softirq + s2.steal
+
+	deltaTotal := total2 - total1
+	deltaIdle := idle2 - idle1
+	if deltaTotal == 0 {
+		return 0
+	}
+	return math.Round(float64(deltaTotal-deltaIdle)/float64(deltaTotal)*1000) / 10
+}
+
 // handleSwaggerUI serves the Swagger UI for API documentation.
 func (h *Handler) handleSwaggerUI(w http.ResponseWriter, r *http.Request) {
 	if r.URL.Path != "/docs" && r.URL.Path != "/docs/" {
@@ -668,6 +870,50 @@ const webUIHTML = `<!DOCTYPE html>
             font-size: 1.5rem;
             font-weight: 600;
             color: #60a5fa;
+        }
+        .sys-stats {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+            gap: 15px;
+            margin-bottom: 25px;
+        }
+        .sys-stat {
+            background: #1e293b;
+            border: 1px solid #334155;
+            border-radius: 8px;
+            padding: 15px 20px;
+        }
+        .sys-stat-title {
+            font-size: 0.75rem;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            color: #64748b;
+            margin-bottom: 6px;
+        }
+        .sys-stat-value {
+            font-size: 1.1rem;
+            font-weight: 600;
+            color: #e2e8f0;
+            margin-bottom: 8px;
+        }
+        .progress-bar {
+            height: 6px;
+            background: #334155;
+            border-radius: 3px;
+            overflow: hidden;
+            margin-bottom: 6px;
+        }
+        .progress-fill {
+            height: 100%;
+            border-radius: 3px;
+            transition: width 0.5s ease;
+        }
+        .progress-fill.ok   { background: #34d399; }
+        .progress-fill.warn { background: #fbbf24; }
+        .progress-fill.crit { background: #f87171; }
+        .sys-stat-sub {
+            font-size: 0.75rem;
+            color: #64748b;
         }
         .player-section {
             background: #1e293b;
@@ -783,6 +1029,27 @@ const webUIHTML = `<!DOCTYPE html>
             <div class="stat">
                 <div class="stat-label">Cameras</div>
                 <div class="stat-value" id="totalCameras">0</div>
+            </div>
+        </div>
+
+        <div class="sys-stats">
+            <div class="sys-stat">
+                <div class="sys-stat-title">Disk (clips volume)</div>
+                <div class="sys-stat-value" id="diskValue">—</div>
+                <div class="progress-bar"><div class="progress-fill ok" id="diskBar" style="width:0%"></div></div>
+                <div class="sys-stat-sub" id="diskSub">Loading…</div>
+            </div>
+            <div class="sys-stat">
+                <div class="sys-stat-title">Memory</div>
+                <div class="sys-stat-value" id="memValue">—</div>
+                <div class="progress-bar"><div class="progress-fill ok" id="memBar" style="width:0%"></div></div>
+                <div class="sys-stat-sub" id="memSub">Loading…</div>
+            </div>
+            <div class="sys-stat">
+                <div class="sys-stat-title">CPU</div>
+                <div class="sys-stat-value" id="cpuValue">—</div>
+                <div class="progress-bar"><div class="progress-fill ok" id="cpuBar" style="width:0%"></div></div>
+                <div class="sys-stat-sub" id="cpuSub">Loading…</div>
             </div>
         </div>
 
@@ -1028,6 +1295,50 @@ const webUIHTML = `<!DOCTYPE html>
             }
         }
 
+        async function loadSystemStats() {
+            try {
+                const resp = await fetch('/api/system');
+                if (!resp.ok) return;
+                const s = await resp.json();
+
+                // Disk
+                const diskPct = s.disk.used_percent;
+                document.getElementById('diskValue').textContent =
+                    formatSize(s.disk.used_bytes) + ' / ' + formatSize(s.disk.total_bytes);
+                const diskBar = document.getElementById('diskBar');
+                diskBar.style.width = diskPct + '%';
+                diskBar.className = 'progress-fill ' + colorClass(diskPct);
+                document.getElementById('diskSub').textContent =
+                    formatSize(s.disk.free_bytes) + ' free · ' + diskPct.toFixed(1) + '% used';
+
+                // Memory
+                const memPct = s.memory.used_percent;
+                document.getElementById('memValue').textContent =
+                    formatSize(s.memory.used_bytes) + ' / ' + formatSize(s.memory.total_bytes);
+                const memBar = document.getElementById('memBar');
+                memBar.style.width = memPct + '%';
+                memBar.className = 'progress-fill ' + colorClass(memPct);
+                document.getElementById('memSub').textContent =
+                    memPct.toFixed(1) + '% used · Go heap: ' + formatSize(s.memory.go_heap_bytes);
+
+                // CPU
+                const cpuPct = s.cpu.used_percent;
+                document.getElementById('cpuValue').textContent = cpuPct.toFixed(1) + '%';
+                const cpuBar = document.getElementById('cpuBar');
+                cpuBar.style.width = cpuPct + '%';
+                cpuBar.className = 'progress-fill ' + colorClass(cpuPct);
+                document.getElementById('cpuSub').textContent = s.cpu.num_cpu + ' CPUs';
+            } catch (_) {
+                // non-fatal — system stats are informational
+            }
+        }
+
+        function colorClass(pct) {
+            if (pct < 70) return 'ok';
+            if (pct < 85) return 'warn';
+            return 'crit';
+        }
+
         function showError(message) {
             const container = document.getElementById('errorContainer');
             container.innerHTML = ` + "`<div class=\"error\">${message}</div>`" + `;
@@ -1047,11 +1358,13 @@ const webUIHTML = `<!DOCTYPE html>
 
         // Initial load
         loadClips();
+        loadSystemStats();
 
         // Auto-refresh every 30 seconds
         setInterval(() => {
             const camera = document.getElementById('cameraFilter').value;
             loadClips(camera);
+            loadSystemStats();
         }, 30000);
     </script>
 </body>
