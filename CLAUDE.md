@@ -4,24 +4,40 @@ This file gives Claude Code (and human contributors) the context needed to work 
 
 ---
 
-## Codebase Overview
+## Monorepo Structure
 
-- **Language:** Pure C11. No C++ anywhere in `src/` or `include/`. The ABI surface must stay C-compatible so plugins can be loaded with `dlopen`.
-- **Modules:** 19 core modules (see table below), each with a narrow public header under `include/emd/`. Implementation files are in `src/`. Phase 2 adds the `emd_cam` module and `agent_abi.h` for Go integration.
-- **Build system:** CMake ≥ 3.22, Ninja generator preferred. Out-of-tree builds only (`build/`). No in-tree `cmake .`.
-- **Binary output:** `build/emd` — static-PIE, typically 3–5 MB stripped.
-- **Test framework:** cmocka (Apache 2.0), vendored under `third_party/cmocka/`. Unit test sources live in `tests/`.
-- **Third-party vendoring:** All deps live under `third_party/` with pinned versions. Never `apt-get install` a dep and assume it's available.
+This repository is a monorepo containing three components:
+
+| Component | Path | Language |
+|-----------|------|----------|
+| **emd** | `components/emd/` | C11 + Go |
+| **autotune** | `components/autotune/` | Go |
+| **postprocess** | `components/postprocess/` | Go |
+
+Shared deployment manifests live in `deploy/`. Documentation lives in `docs/`.
+
+The sections below describe the **emd** component specifically. All paths are relative to `components/emd/`.
+
+---
+
+## emd Component Overview
+
+- **Language:** Pure C11. No C++ anywhere in `components/emd/src/` or `components/emd/include/`. The ABI surface must stay C-compatible so plugins can be loaded with `dlopen`.
+- **Modules:** 19 core modules (see table below), each with a narrow public header under `components/emd/include/emd/`. Implementation files are in `components/emd/src/`. Phase 2 adds the `emd_cam` module and `agent_abi.h` for Go integration.
+- **Build system:** CMake ≥ 3.22, Ninja generator preferred. Out-of-tree builds only (`components/emd/build/`). No in-tree `cmake .`.
+- **Binary output:** `components/emd/build/emd` — static-PIE, typically 3–5 MB stripped.
+- **Test framework:** cmocka (Apache 2.0), vendored under `components/emd/third_party/cmocka/`. Unit test sources live in `components/emd/tests/`.
+- **Third-party vendoring:** All deps live under `components/emd/third_party/` with pinned versions. Never `apt-get install` a dep and assume it's available.
 
 ---
 
 ## Key Invariants (Do Not Violate)
 
-1. **No `pthread_mutex_lock` on the hot path.** Camera worker threads (`camera_worker` in `src/emd_supervisor.c`) must not acquire any contended mutex. Locks are permitted only in supervisor/config code and in the recorder and notifier threads outside the per-frame loop.
+1. **No `pthread_mutex_lock` on the hot path.** Camera worker threads (`camera_worker` in `components/emd/src/emd_supervisor.c`) must not acquire any contended mutex. Locks are permitted only in supervisor/config code and in the recorder and notifier threads outside the per-frame loop.
 
 2. **C11 `_Atomic` with explicit memory orders.** Use `memory_order_acquire` / `memory_order_release` at handoff points. Use `memory_order_relaxed` only where justified by a code comment explaining why relaxed is safe. Never use the default `memory_order_seq_cst` implicitly — be explicit.
 
-3. **Zero-copy from depacketizer into ring buffer.** The RTP payload is written directly into the ring buffer backing store (`emd_ringbuf_reserve` → memcpy → `emd_ringbuf_commit`). No per-NAL malloc. No intermediate copy. See `push_nal_to_ring` in `src/emd_supervisor.c`.
+3. **Zero-copy from depacketizer into ring buffer.** The RTP payload is written directly into the ring buffer backing store (`emd_ringbuf_reserve` → memcpy → `emd_ringbuf_commit`). No per-NAL malloc. No intermediate copy. See `push_nal_to_ring` in `components/emd/src/emd_supervisor.c`.
 
 4. **Per-camera arena allocator.** Each camera's ring buffer is backed by a contiguous arena sized at startup (`buffer_seconds × max_bitrate_bps / 8 × 1.25`). NAL records index into this arena. Do not call `malloc` per NAL unit on the hot path.
 
@@ -42,9 +58,9 @@ These are enforced by CI and will cause build failures if violated:
   - `-Wall -Wextra -Wpedantic`
   - `-Wconversion -Wshadow -Wformat=2`
   - `-Werror`
-  - Vendored third-party code under `third_party/` is built with `-w` (warnings suppressed) — do not apply this to `src/`.
+  - Vendored third-party code under `components/emd/third_party/` is built with `-w` (warnings suppressed) — do not apply this to `components/emd/src/`.
 - **No VLAs.** `-Wvla` is implicitly covered by `-Wpedantic` in C11 mode.
-- **All public functions must have declarations in the corresponding `include/emd/*.h` header.** No `extern` declarations in `.c` files that reference another module's internals.
+- **All public functions must have declarations in the corresponding `components/emd/include/emd/*.h` header.** No `extern` declarations in `.c` files that reference another module's internals.
 - **Integer types:** prefer `uint32_t`/`uint64_t`/`int32_t` from `<stdint.h>`. Avoid bare `int` for sizes and counts where the range matters.
 
 ---
@@ -77,17 +93,17 @@ These are enforced by CI and will cause build failures if violated:
 
 ## How to Add a New Camera Module
 
-The camera pipeline is driven by `camera_worker` in `src/emd_supervisor.c`. To add support for a new codec or transport:
+The camera pipeline is driven by `camera_worker` in `components/emd/src/emd_supervisor.c`. To add support for a new codec or transport:
 
-1. **Create a depacketizer** (`src/emd_<codec>_depay.c`, header `include/emd/<codec>_depay.h`) following the pattern of `emd_h264_depay`. It must expose a NAL callback type `emd_<codec>_nal_cb_t` with signature `(const uint8_t *nal, size_t len, bool marker, uint32_t pts, void *userdata)`.
+1. **Create a depacketizer** (`components/emd/src/emd_<codec>_depay.c`, header `components/emd/include/emd/<codec>_depay.h`) following the pattern of `emd_h264_depay`. It must expose a NAL callback type `emd_<codec>_nal_cb_t` with signature `(const uint8_t *nal, size_t len, bool marker, uint32_t pts, void *userdata)`.
 
-2. **Create a NAL parser** (`src/emd_<codec>_parse.c`) to identify NAL types (keyframe, param set, etc.) and extract the fields the inspector needs.
+2. **Create a NAL parser** (`components/emd/src/emd_<codec>_parse.c`) to identify NAL types (keyframe, param set, etc.) and extract the fields the inspector needs.
 
 3. **Wire the codec into `camera_worker`:** add an init branch for the new codec in the `ctx.codec` switch, register a NAL callback that calls `push_nal_to_ring` with the correct `flags` bitmask (`EMD_NAL_KEYFRAME`, `EMD_NAL_PARAMSET`).
 
-4. **Add unit tests** in `tests/test_<codec>_depay.c` and `tests/test_<codec>_parse.c` following the pattern of the H.264/H.265 test files.
+4. **Add unit tests** in `components/emd/tests/test_<codec>_depay.c` and `components/emd/tests/test_<codec>_parse.c` following the pattern of the H.264/H.265 test files.
 
-5. **Register the test** in `tests/CMakeLists.txt` using the `emd_add_test` macro.
+5. **Register the test** in `components/emd/tests/CMakeLists.txt` using the `emd_add_test` macro.
 
 ---
 
@@ -95,24 +111,32 @@ The camera pipeline is driven by `camera_worker` in `src/emd_supervisor.c`. To a
 
 ### Unit tests
 
+All emd builds happen inside `components/emd/`. From the repo root:
+
 ```sh
-cmake -S . -B build -DCMAKE_BUILD_TYPE=Debug
-cmake --build build --parallel
-cd build && ctest --output-on-failure
+cmake -S components/emd -B components/emd/build -DCMAKE_BUILD_TYPE=Debug
+cmake --build components/emd/build --parallel
+cd components/emd/build && ctest --output-on-failure
+```
+
+Or use the top-level Makefile shortcut:
+
+```sh
+make test-emd
 ```
 
 ### End-to-end test (requires Python 3 and ffmpeg)
 
 ```sh
-bash scripts/e2e_test.sh
+bash components/emd/scripts/e2e_test.sh
 ```
 
 Or directly:
 
 ```sh
-python3 tests/integration/e2e_test.py \
-    --binary build/emd \
-    --fixtures-dir tests/fixtures/streams \
+python3 components/emd/tests/integration/e2e_test.py \
+    --binary components/emd/build/emd \
+    --fixtures-dir components/emd/tests/fixtures/streams \
     --scenario motion \
     --container mpegts
 ```
@@ -122,43 +146,43 @@ python3 tests/integration/e2e_test.py \
 ASan + UBSan:
 
 ```sh
-cmake -S . -B build-asan \
+cmake -S components/emd -B components/emd/build-asan \
     -DCMAKE_BUILD_TYPE=Debug \
     -DCMAKE_C_FLAGS="-fsanitize=address,undefined -fno-omit-frame-pointer"
-cmake --build build-asan --parallel
-cd build-asan && ctest --output-on-failure
+cmake --build components/emd/build-asan --parallel
+cd components/emd/build-asan && ctest --output-on-failure
 ```
 
 TSan (thread sanitizer — catches data races):
 
 ```sh
-cmake -S . -B build-tsan \
+cmake -S components/emd -B components/emd/build-tsan \
     -DCMAKE_BUILD_TYPE=Debug \
     -DCMAKE_C_FLAGS="-fsanitize=thread"
-cmake --build build-tsan --parallel
-cd build-tsan && ctest --output-on-failure
+cmake --build components/emd/build-tsan --parallel
+cd components/emd/build-tsan && ctest --output-on-failure
 ```
 
 MSan (memory sanitizer — Clang only):
 
 ```sh
-cmake -S . -B build-msan \
+cmake -S components/emd -B components/emd/build-msan \
     -DCMAKE_BUILD_TYPE=Debug \
     -DCMAKE_C_COMPILER=clang \
     -DCMAKE_C_FLAGS="-fsanitize=memory -fno-omit-frame-pointer"
-cmake --build build-msan --parallel
-cd build-msan && ctest --output-on-failure
+cmake --build components/emd/build-msan --parallel
+cd components/emd/build-msan && ctest --output-on-failure
 ```
 
 ### Coverage report (gcovr)
 
 ```sh
-cmake -S . -B build-cov \
+cmake -S components/emd -B components/emd/build-cov \
     -DCMAKE_BUILD_TYPE=Debug \
     -DCMAKE_C_FLAGS="--coverage"
-cmake --build build-cov --parallel
-cd build-cov && ctest
-gcovr --root .. --exclude '../tests/' --exclude '../third_party/' \
+cmake --build components/emd/build-cov --parallel
+cd components/emd/build-cov && ctest
+gcovr --root ../.. --exclude '../../components/emd/tests/' --exclude '../../components/emd/third_party/' \
       --html-details coverage.html
 ```
 
@@ -168,14 +192,14 @@ gcovr --root .. --exclude '../tests/' --exclude '../third_party/' \
 
 | Library | License | Location | Notes |
 |---|---|---|---|
-| `tomlc99` | MIT | `third_party/tomlc99/` | Single `.c` + `.h` pair; built as `tomlc99` static lib |
-| `mqtt-c` (LiamBindle) | MIT | `third_party/mqtt-c/` | `mqtt.c` + `mqtt_pal.c`; built as `mqtt_c` static lib |
-| `cmocka` | Apache 2.0 | `third_party/cmocka/` | Test-only; system installation preferred, vendored stub fallback |
+| `tomlc99` | MIT | `components/emd/third_party/tomlc99/` | Single `.c` + `.h` pair; built as `tomlc99` static lib |
+| `mqtt-c` (LiamBindle) | MIT | `components/emd/third_party/mqtt-c/` | `mqtt.c` + `mqtt_pal.c`; built as `mqtt_c` static lib |
+| `cmocka` | Apache 2.0 | `components/emd/third_party/cmocka/` | Test-only; system installation preferred, vendored stub fallback |
 
 ### Adding a new vendored dependency
 
-1. Copy the source into `third_party/<name>/` with a pinned version tag in a `third_party/<name>/VERSION` file.
-2. Add a `add_library` target in the root `CMakeLists.txt` with `target_compile_options(... PRIVATE -w)` to suppress vendored-code warnings.
+1. Copy the source into `components/emd/third_party/<name>/` with a pinned version tag in a `components/emd/third_party/<name>/VERSION` file.
+2. Add a `add_library` target in `components/emd/CMakeLists.txt` with `target_compile_options(... PRIVATE -w)` to suppress vendored-code warnings.
 3. Add the dependency to this table.
 4. Update the SBOM (CycloneDX) generation step in CI.
 
@@ -185,6 +209,6 @@ gcovr --root .. --exclude '../tests/' --exclude '../third_party/' \
 
 - **No GPL** components, statically or dynamically linked in the production binary.
 - **No shelling out to the `ffmpeg` CLI** from the production binary. Any FFmpeg usage must be in-process via libavcodec/libavformat, isolated behind the `emd_decoder_libav` plugin (dynamic link only, LGPL build of FFmpeg with `--disable-gpl --disable-nonfree`).
-- **The `ffmpeg` CLI is acceptable in test scripts only** (e.g., `scripts/generate_fixtures.sh`) because test tooling is not shipped in the production binary.
+- **The `ffmpeg` CLI is acceptable in test scripts only** (e.g., `components/emd/scripts/generate_fixtures.sh`) because test tooling is not shipped in the production binary.
 - **LGPL dynamic-link** is acceptable for optional plugins (`emd_mux_libav`, `emd_decoder_libav`). Static link of LGPL is not acceptable (relinkability requirement conflicts with static-PIE).
 - CI runs a license audit step that greps the shipped binary for GPL strings; this check must pass before any release tag.

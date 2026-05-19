@@ -1,26 +1,48 @@
+# ── Build outputs ────────────────────────────────────────────────────────────
+# C/Go build directories (out-of-tree CMake builds, Go binaries)
 build/
+components/emd/build*/
+components/emd/build/
+components/autotune/bin/
+components/postprocess/bin/
+
+# Stray compiled binaries at repo root
+emd-agent
+
+# Object / archive / shared-library artifacts (should not reach VCS)
 *.o
 *.a
 *.so
 *.dylib
-/tmp/
-tests/fixtures/streams/*.h264
-tests/fixtures/streams/*.ts
-tests/fixtures/streams/*.mp4
-tests/integration/__pycache__/
 
-# Private deployment files (contain camera IPs, credentials)
-k8s/agent.toml
-k8s/camera_list.txt
-k8s/discovery.log
+# ── Go workspace ─────────────────────────────────────────────────────────────
+# go.work.sum is auto-generated; commit go.work itself but ignore the checksum db
+go.work.sum
+
+# ── Test fixtures (generated, large binary) ──────────────────────────────────
+components/emd/tests/fixtures/streams/*.h264
+components/emd/tests/fixtures/streams/*.ts
+components/emd/tests/fixtures/streams/*.mp4
+components/emd/tests/fixtures/streams/
+components/emd/tests/integration/__pycache__/
+
+# ── Deployment / operations (contain camera IPs and credentials) ─────────────
+components/emd/k8s/discovery.log
+components/emd/k8s/camera_list.txt
+components/emd/k8s/agent.toml
+components/emd/configs/axis_p4708.toml
 DEPLOYMENT_STATUS.md
 LIVE_MONITORING.md
-configs/*.toml
-!configs/*.example.toml
 
-# Docker artifacts
-*.tar
-
-# Environment variables (secrets)
+# ── Secrets and environment ───────────────────────────────────────────────────
 .env
 .env.local
+
+# ── Docker artifacts ──────────────────────────────────────────────────────────
+*.tar
+
+# ── Git housekeeping ──────────────────────────────────────────────────────────
+.git.backup/
+
+.gemini/
+gha-creds-*.json

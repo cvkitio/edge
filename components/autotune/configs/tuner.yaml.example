@@ -1,0 +1,24 @@
+# cvkit-autotune configuration example
+# Most settings are passed as CLI flags; this file documents the available options.
+
+# Edge agent connection
+agent:
+  url: "http://edge-3.internal:8080"
+
+# NATS for reading confirmed/suppressed events (Phase D canary watch)
+nats:
+  url: "nats://127.0.0.1:4222"
+  # creds_file: "/etc/cvkit/nats.creds"
+
+# Tuner search parameters
+search:
+  objective: "f0.5"           # f0.5 | f1 | precision | recall
+  max_recall_loss_pct: 2.0    # hard constraint on TP loss
+  event_window: "7d"          # history window to pull from edge event log
+  min_events: 200             # fall back to cluster-level if below this
+
+# Canary settings (applied during 'cvkit-autotune apply')
+canary:
+  duration: "15m"
+  spike_factor: 3.0      # rollback if confirmed rate spikes ≥ 3×
+  zero_timeout: "2m"     # rollback if confirmed rate drops to 0 for 2m
