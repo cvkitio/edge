@@ -373,10 +373,13 @@ type ClipInfo struct {
 	Label    string    `json:"label,omitempty"` // "tp", "fp", "reference", or ""
 }
 
-// ClipsListResponse represents the list of clips.
+// ClipsListResponse represents a paginated list of clips.
 type ClipsListResponse struct {
-	Clips []ClipInfo `json:"clips"`
-	Total int        `json:"total"`
+	Clips      []ClipInfo `json:"clips"`
+	Total      int        `json:"total"`       // total matching clips across all pages
+	Page       int        `json:"page"`        // current page (1-indexed)
+	PageSize   int        `json:"page_size"`   // clips per page
+	TotalPages int        `json:"total_pages"` // ceil(total/page_size)
 }
 
 // ClipLabel is stored as a sidecar JSON file alongside each labeled clip.
@@ -430,8 +433,21 @@ func (h *Handler) handleClipsList(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Optional query parameter to filter by camera
-	camera := r.URL.Query().Get("camera")
+	q := r.URL.Query()
+	camera := q.Get("camera")
+
+	// Pagination parameters: page is 1-indexed, default page_size 50, max 500.
+	page, pageSize := 1, 50
+	if s := q.Get("page"); s != "" {
+		if n, err := strconv.Atoi(s); err == nil && n > 0 {
+			page = n
+		}
+	}
+	if s := q.Get("page_size"); s != "" {
+		if n, err := strconv.Atoi(s); err == nil && n > 0 && n <= 500 {
+			pageSize = n
+		}
+	}
 
 	clips, err := h.scanClips(camera)
 	if err != nil {
@@ -441,10 +457,27 @@ func (h *Handler) handleClipsList(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	total := len(clips)
+	totalPages := (total + pageSize - 1) / pageSize
+	if totalPages == 0 {
+		totalPages = 1
+	}
+	if page > totalPages {
+		page = totalPages
+	}
+	start := (page - 1) * pageSize
+	end := start + pageSize
+	if end > total {
+		end = total
+	}
+
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(ClipsListResponse{
-		Clips: clips,
-		Total: len(clips),
+		Clips:      clips[start:end],
+		Total:      total,
+		Page:       page,
+		PageSize:   pageSize,
+		TotalPages: totalPages,
 	})
 }
 
@@ -1246,6 +1279,42 @@ const webUIHTML = `<!DOCTYPE html>
             margin-bottom: 20px;
             opacity: 0.5;
         }
+        .pagination {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            margin-top: 24px;
+            justify-content: center;
+            flex-wrap: wrap;
+        }
+        .page-btn {
+            padding: 7px 14px;
+            background: #1e293b;
+            border: 1px solid #334155;
+            color: #e2e8f0;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 0.85rem;
+            transition: all 0.15s;
+            min-width: 38px;
+        }
+        .page-btn:hover:not(:disabled) { background: #334155; border-color: #475569; }
+        .page-btn:disabled { opacity: 0.35; cursor: default; }
+        .page-btn.active { background: #2563eb; border-color: #3b82f6; color: #fff; }
+        .page-info {
+            font-size: 0.85rem;
+            color: #94a3b8;
+            padding: 0 6px;
+        }
+        .page-size-select {
+            padding: 6px 10px;
+            background: #1e293b;
+            border: 1px solid #334155;
+            color: #e2e8f0;
+            border-radius: 6px;
+            font-size: 0.82rem;
+            cursor: pointer;
+        }
     </style>
     <script src="https://cdn.jsdelivr.net/npm/hls.js@latest"></script>
 </head>
@@ -1259,6 +1328,12 @@ const webUIHTML = `<!DOCTYPE html>
         <div class="controls">
             <select id="cameraFilter">
                 <option value="">All Cameras</option>
+            </select>
+            <select id="pageSizeSelect" class="page-size-select" onchange="onPageSizeChange()">
+                <option value="25">25 per page</option>
+                <option value="50" selected>50 per page</option>
+                <option value="100">100 per page</option>
+                <option value="250">250 per page</option>
             </select>
             <button onclick="refreshClips()">🔄 Refresh</button>
         </div>
@@ -1316,15 +1391,22 @@ const webUIHTML = `<!DOCTYPE html>
         <div id="clipsContainer">
             <div class="loading">Loading clips...</div>
         </div>
+        <div class="pagination" id="paginationBar"></div>
     </div>
 
     <script>
         let allClips = [];
         let currentClip = null;
+        let currentPage = 1;
+        let totalPages = 1;
+        let totalClips = 0;
 
-        async function loadClips(camera = '') {
+        async function loadClips(camera = '', page = 1) {
+            currentPage = page;
             try {
-                const url = camera ? ` + "`/api/clips?camera=${encodeURIComponent(camera)}`" + ` : '/api/clips';
+                const pageSize = document.getElementById('pageSizeSelect').value;
+                let url = ` + "`/api/clips?page=${page}&page_size=${pageSize}`" + `;
+                if (camera) url += ` + "`&camera=${encodeURIComponent(camera)}`" + `;
                 const response = await fetch(url);
 
                 if (!response.ok) {
@@ -1333,16 +1415,53 @@ const webUIHTML = `<!DOCTYPE html>
 
                 const data = await response.json();
                 allClips = data.clips || [];
+                totalClips = data.total || 0;
+                totalPages = data.total_pages || 1;
+                currentPage = data.page || 1;
 
                 displayClips();
                 updateStats();
                 updateCameraFilter();
+                renderPagination();
                 clearError();
             } catch (error) {
                 showError('Failed to load clips: ' + error.message);
                 document.getElementById('clipsContainer').innerHTML =
                     '<div class="empty-state">Failed to load clips</div>';
             }
+        }
+
+        function renderPagination() {
+            const bar = document.getElementById('paginationBar');
+            if (totalPages <= 1) { bar.innerHTML = ''; return; }
+
+            const camera = document.getElementById('cameraFilter').value;
+
+            // Build page window: always show first, last, current ±2
+            const pages = new Set([1, totalPages]);
+            for (let p = Math.max(1, currentPage - 2); p <= Math.min(totalPages, currentPage + 2); p++) {
+                pages.add(p);
+            }
+            const sorted = [...pages].sort((a, b) => a - b);
+
+            let html = ` + "`<button class=\"page-btn\" ${currentPage === 1 ? 'disabled' : ''} onclick=\"loadClips('${camera}', ${currentPage - 1})\">‹ Prev</button>`" + `;
+
+            let prev = 0;
+            for (const p of sorted) {
+                if (p - prev > 1) html += ` + "`<span class=\"page-info\">…</span>`" + `;
+                html += ` + "`<button class=\"page-btn ${p === currentPage ? 'active' : ''}\" onclick=\"loadClips('${camera}', ${p})\">${p}</button>`" + `;
+                prev = p;
+            }
+
+            html += ` + "`<button class=\"page-btn\" ${currentPage === totalPages ? 'disabled' : ''} onclick=\"loadClips('${camera}', ${currentPage + 1})\">Next ›</button>`" + `;
+            html += ` + "`<span class=\"page-info\">${totalClips.toLocaleString()} clips total</span>`" + `;
+
+            bar.innerHTML = html;
+        }
+
+        function onPageSizeChange() {
+            const camera = document.getElementById('cameraFilter').value;
+            loadClips(camera, 1);
         }
 
         function displayClips() {
@@ -1545,7 +1664,8 @@ const webUIHTML = `<!DOCTYPE html>
         }
 
         function updateStats() {
-            document.getElementById('totalClips').textContent = allClips.length;
+            // totalClips is the full count from the API, not just the current page.
+            document.getElementById('totalClips').textContent = totalClips.toLocaleString();
 
             const totalBytes = allClips.reduce((sum, clip) => sum + clip.size, 0);
             document.getElementById('totalSize').textContent = formatSize(totalBytes);
@@ -1652,20 +1772,22 @@ const webUIHTML = `<!DOCTYPE html>
 
         function refreshClips() {
             const camera = document.getElementById('cameraFilter').value;
-            loadClips(camera);
+            loadClips(camera, currentPage);
         }
 
-        // Event listeners
-        document.getElementById('cameraFilter').addEventListener('change', refreshClips);
+        // Camera filter resets to page 1
+        document.getElementById('cameraFilter').addEventListener('change', () => {
+            loadClips(document.getElementById('cameraFilter').value, 1);
+        });
 
         // Initial load
         loadClips();
         loadSystemStats();
 
-        // Auto-refresh every 30 seconds
+        // Auto-refresh every 30 seconds, stay on current page
         setInterval(() => {
             const camera = document.getElementById('cameraFilter').value;
-            loadClips(camera);
+            loadClips(camera, currentPage);
             loadSystemStats();
         }, 30000);
     </script>
