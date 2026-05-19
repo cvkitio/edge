@@ -14,18 +14,21 @@ import (
 	"path/filepath"
 	"runtime"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
 	"time"
 
 	"github.com/cvkitio/cvkit/edge/emd-agent/internal/agent"
+	"github.com/cvkitio/cvkit/edge/emd-agent/internal/eventlog"
 )
 
 // Handler provides HTTP endpoints for the agent API.
 type Handler struct {
-	supervisor *agent.Supervisor
-	clipRoot   string
+	supervisor   *agent.Supervisor
+	clipRoot     string
+	eventLogRoot string
 
 	cpuMu     sync.Mutex
 	cpuCached float64
@@ -33,10 +36,11 @@ type Handler struct {
 }
 
 // NewHandler creates a new API handler.
-func NewHandler(supervisor *agent.Supervisor, clipRoot string) *Handler {
+func NewHandler(supervisor *agent.Supervisor, clipRoot, eventLogRoot string) *Handler {
 	return &Handler{
-		supervisor: supervisor,
-		clipRoot:   clipRoot,
+		supervisor:   supervisor,
+		clipRoot:     clipRoot,
+		eventLogRoot: eventLogRoot,
 	}
 }
 
@@ -149,30 +153,90 @@ func (h *Handler) handleCameras(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(CameraListResponse{Cameras: cameras})
 }
 
-// handleCameraConfig handles GET and PUT requests for camera configuration.
+// handleCameraConfig handles requests under /api/cameras/{name}/.
 func (h *Handler) handleCameraConfig(w http.ResponseWriter, r *http.Request) {
-	// Extract camera name from path: /api/cameras/{name}/config
+	// Extract camera name and sub-resource from path: /api/cameras/{name}/{sub}
 	path := strings.TrimPrefix(r.URL.Path, "/api/cameras/")
 	parts := strings.Split(path, "/")
 
-	if len(parts) < 2 || parts[1] != "config" {
+	if len(parts) < 2 || parts[0] == "" {
 		http.Error(w, "Not found", http.StatusNotFound)
 		return
 	}
 
 	camName := parts[0]
-	if camName == "" {
-		http.Error(w, "Camera name required", http.StatusBadRequest)
+	sub := parts[1]
+
+	switch sub {
+	case "config":
+		switch r.Method {
+		case http.MethodGet:
+			h.getInspectorConfig(w, camName)
+		case http.MethodPut:
+			h.updateInspectorConfig(w, r, camName)
+		default:
+			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		}
+	case "events":
+		h.handleCameraEvents(w, r, camName)
+	default:
+		http.Error(w, "Not found", http.StatusNotFound)
+	}
+}
+
+// handleCameraEvents streams per-camera motion events from the JSONL event log.
+// GET /api/cameras/{name}/events?from=<RFC3339>&to=<RFC3339>&limit=<int>
+func (h *Handler) handleCameraEvents(w http.ResponseWriter, r *http.Request, camName string) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
 
-	switch r.Method {
-	case http.MethodGet:
-		h.getInspectorConfig(w, camName)
-	case http.MethodPut:
-		h.updateInspectorConfig(w, r, camName)
-	default:
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+	// Parse query parameters.
+	from := time.Now().Add(-24 * time.Hour)
+	to := time.Now()
+	limit := 10000
+
+	if s := r.URL.Query().Get("from"); s != "" {
+		if t, err := time.Parse(time.RFC3339, s); err == nil {
+			from = t
+		}
+	}
+	if s := r.URL.Query().Get("to"); s != "" {
+		if t, err := time.Parse(time.RFC3339, s); err == nil {
+			to = t
+		}
+	}
+	if s := r.URL.Query().Get("limit"); s != "" {
+		if n, err := strconv.Atoi(s); err == nil && n > 0 {
+			limit = n
+		}
+	}
+
+	reader, err := eventlog.Open(h.eventLogRoot, camName)
+	if err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusInternalServerError)
+		json.NewEncoder(w).Encode(ErrorResponse{Error: fmt.Sprintf("open event log: %v", err)})
+		return
+	}
+
+	events, err := reader.Range(from, to, limit)
+	if err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusInternalServerError)
+		json.NewEncoder(w).Encode(ErrorResponse{Error: fmt.Sprintf("read events: %v", err)})
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/x-ndjson")
+	w.Header().Set("Access-Control-Allow-Origin", "*")
+	enc := json.NewEncoder(w)
+	for i := range events {
+		if err := enc.Encode(&events[i]); err != nil {
+			log.Printf("API: events encode error for %s: %v", camName, err)
+			return
+		}
 	}
 }
 
@@ -306,12 +370,57 @@ type ClipInfo struct {
 	Size     int64     `json:"size"`
 	ModTime  time.Time `json:"mod_time"`
 	URL      string    `json:"url"`
+	Label    string    `json:"label,omitempty"` // "tp", "fp", "reference", or ""
 }
 
 // ClipsListResponse represents the list of clips.
 type ClipsListResponse struct {
 	Clips []ClipInfo `json:"clips"`
 	Total int        `json:"total"`
+}
+
+// ClipLabel is stored as a sidecar JSON file alongside each labeled clip.
+type ClipLabel struct {
+	Label     string    `json:"label"`      // "tp", "fp", or "reference"
+	LabeledAt time.Time `json:"labeled_at"`
+	Camera    string    `json:"camera"`
+	Clip      string    `json:"clip"`
+}
+
+// LabelRequest is the body for POST /api/clips/{camera}/{filename}/label.
+type LabelRequest struct {
+	Label string `json:"label"` // "tp", "fp", or "reference"
+}
+
+// clipLabelPath returns the sidecar file path for a clip.
+func clipLabelPath(clipFilePath string) string {
+	return clipFilePath + ".label.json"
+}
+
+// readClipLabel reads the sidecar label for a clip; returns nil if unlabeled.
+func readClipLabel(clipFilePath string) *ClipLabel {
+	b, err := os.ReadFile(clipLabelPath(clipFilePath))
+	if err != nil {
+		return nil
+	}
+	var l ClipLabel
+	if err := json.Unmarshal(b, &l); err != nil {
+		return nil
+	}
+	return &l
+}
+
+// writeClipLabel atomically writes a sidecar label for a clip.
+func writeClipLabel(clipFilePath string, label ClipLabel) error {
+	b, err := json.MarshalIndent(label, "", "  ")
+	if err != nil {
+		return err
+	}
+	tmp := clipLabelPath(clipFilePath) + ".tmp"
+	if err := os.WriteFile(tmp, b, 0640); err != nil {
+		return err
+	}
+	return os.Rename(tmp, clipLabelPath(clipFilePath))
 }
 
 // handleClipsList returns a list of all recorded clips.
@@ -385,6 +494,10 @@ func (h *Handler) scanClips(cameraFilter string) ([]ClipInfo, error) {
 					urlPath = strings.TrimSuffix(filename, ext) + ".m3u8"
 				}
 
+				label := ""
+				if l := readClipLabel(path); l != nil {
+					label = l.Label
+				}
 				clips = append(clips, ClipInfo{
 					Camera:   cameraName,
 					Filename: displayFilename,
@@ -392,6 +505,7 @@ func (h *Handler) scanClips(cameraFilter string) ([]ClipInfo, error) {
 					Size:     info.Size(),
 					ModTime:  info.ModTime(),
 					URL:      fmt.Sprintf("/api/clips/%s/%s", cameraName, urlPath),
+					Label:    label,
 				})
 			}
 
@@ -411,8 +525,14 @@ func (h *Handler) scanClips(cameraFilter string) ([]ClipInfo, error) {
 	return clips, nil
 }
 
-// handleClipFile serves a specific clip file.
+// handleClipFile serves a specific clip file, and dispatches label sub-resource requests.
 func (h *Handler) handleClipFile(w http.ResponseWriter, r *http.Request) {
+	// Dispatch label sub-resource: /api/clips/{camera}/{filename}/label
+	if strings.HasSuffix(r.URL.Path, "/label") {
+		h.handleClipLabel(w, r)
+		return
+	}
+
 	if r.Method != http.MethodGet && r.Method != http.MethodHead {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
@@ -616,6 +736,88 @@ func (h *Handler) handleOpenAPISpec(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("Access-Control-Allow-Origin", "*")
 	w.Write([]byte(openAPISpec))
+}
+
+// handleClipLabel handles GET/POST/DELETE for /api/clips/{camera}/{filename}/label.
+// Labels are stored as sidecar JSON files alongside the clip on disk.
+func (h *Handler) handleClipLabel(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Access-Control-Allow-Origin", "*")
+	w.Header().Set("Content-Type", "application/json")
+
+	// Strip /label suffix then split into camera + filename.
+	trimmed := strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, "/api/clips/"), "/label")
+	parts := strings.SplitN(trimmed, "/", 2)
+	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(ErrorResponse{Error: "invalid clip path"})
+		return
+	}
+	camera, filename := parts[0], parts[1]
+
+	if strings.Contains(camera, "..") || strings.Contains(filename, "..") {
+		w.WriteHeader(http.StatusForbidden)
+		json.NewEncoder(w).Encode(ErrorResponse{Error: "invalid path"})
+		return
+	}
+
+	clipPath := filepath.Join(h.clipRoot, camera, filename)
+	if _, err := os.Stat(clipPath); os.IsNotExist(err) {
+		w.WriteHeader(http.StatusNotFound)
+		json.NewEncoder(w).Encode(ErrorResponse{Error: "clip not found"})
+		return
+	}
+
+	switch r.Method {
+	case http.MethodGet:
+		lbl := readClipLabel(clipPath)
+		if lbl == nil {
+			w.WriteHeader(http.StatusNotFound)
+			json.NewEncoder(w).Encode(ErrorResponse{Error: "not labeled"})
+			return
+		}
+		json.NewEncoder(w).Encode(lbl)
+
+	case http.MethodPost:
+		var req LabelRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			json.NewEncoder(w).Encode(ErrorResponse{Error: "invalid JSON"})
+			return
+		}
+		switch req.Label {
+		case "tp", "fp", "reference":
+			// valid
+		default:
+			w.WriteHeader(http.StatusBadRequest)
+			json.NewEncoder(w).Encode(ErrorResponse{Error: `label must be "tp", "fp", or "reference"`})
+			return
+		}
+		lbl := ClipLabel{
+			Label:     req.Label,
+			LabeledAt: time.Now().UTC(),
+			Camera:    camera,
+			Clip:      filename,
+		}
+		if err := writeClipLabel(clipPath, lbl); err != nil {
+			w.WriteHeader(http.StatusInternalServerError)
+			json.NewEncoder(w).Encode(ErrorResponse{Error: fmt.Sprintf("write label: %v", err)})
+			return
+		}
+		json.NewEncoder(w).Encode(lbl)
+
+	case http.MethodDelete:
+		err := os.Remove(clipLabelPath(clipPath))
+		if err != nil && !os.IsNotExist(err) {
+			w.WriteHeader(http.StatusInternalServerError)
+			json.NewEncoder(w).Encode(ErrorResponse{Error: fmt.Sprintf("remove label: %v", err)})
+			return
+		}
+		json.NewEncoder(w).Encode(SuccessResponse{Success: true, Message: "label removed"})
+
+	default:
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		json.NewEncoder(w).Encode(ErrorResponse{Error: "method not allowed"})
+	}
 }
 
 // handleSystemStats returns disk, memory, and CPU usage for the host.
@@ -915,6 +1117,50 @@ const webUIHTML = `<!DOCTYPE html>
             font-size: 0.75rem;
             color: #64748b;
         }
+        .label-buttons {
+            display: flex;
+            gap: 8px;
+            margin-top: 14px;
+            flex-wrap: wrap;
+            align-items: center;
+        }
+        .label-btn {
+            padding: 7px 16px;
+            border-radius: 6px;
+            border: 1px solid;
+            cursor: pointer;
+            font-size: 0.82rem;
+            font-weight: 500;
+            background: transparent;
+            transition: all 0.15s;
+        }
+        .label-btn.tp  { border-color: #34d399; color: #34d399; }
+        .label-btn.fp  { border-color: #f87171; color: #f87171; }
+        .label-btn.ref { border-color: #fbbf24; color: #fbbf24; }
+        .label-btn.clear { border-color: #475569; color: #64748b; }
+        .label-btn.tp:hover,  .label-btn.tp.active  { background: #34d399; color: #0f172a; }
+        .label-btn.fp:hover,  .label-btn.fp.active  { background: #f87171; color: #0f172a; }
+        .label-btn.ref:hover, .label-btn.ref.active { background: #fbbf24; color: #0f172a; }
+        .label-btn.clear:hover { background: #334155; color: #e2e8f0; }
+        .label-status {
+            font-size: 0.78rem;
+            color: #64748b;
+            margin-left: 4px;
+        }
+        .label-badge {
+            display: inline-block;
+            font-size: 0.68rem;
+            font-weight: 700;
+            padding: 2px 6px;
+            border-radius: 3px;
+            text-transform: uppercase;
+            letter-spacing: 0.06em;
+            margin-left: 6px;
+            vertical-align: middle;
+        }
+        .label-badge.tp        { background: #14532d; color: #86efac; }
+        .label-badge.fp        { background: #7f1d1d; color: #fca5a5; }
+        .label-badge.reference { background: #713f12; color: #fde68a; }
         .player-section {
             background: #1e293b;
             border-radius: 12px;
@@ -1058,6 +1304,13 @@ const webUIHTML = `<!DOCTYPE html>
         <div class="player-section" id="playerSection">
             <div class="player-title" id="playerTitle">Now Playing</div>
             <video id="videoPlayer" controls preload="metadata"></video>
+            <div class="label-buttons">
+                <button class="label-btn tp"    onclick="setLabel('tp')">✓ True Positive</button>
+                <button class="label-btn fp"    onclick="setLabel('fp')">✗ False Positive</button>
+                <button class="label-btn ref"   onclick="setLabel('reference')">⭐ Reference</button>
+                <button class="label-btn clear" onclick="clearLabel()">Clear</button>
+                <span class="label-status" id="labelStatus"></span>
+            </div>
         </div>
 
         <div id="clipsContainer">
@@ -1118,8 +1371,11 @@ const webUIHTML = `<!DOCTYPE html>
                     card.classList.add('playing');
                 }
 
+                const badge = clip.label
+                    ? ` + "`<span class=\"label-badge ${clip.label}\">${clip.label === 'reference' ? 'ref' : clip.label}</span>`" + `
+                    : '';
                 card.innerHTML = ` + "`" + `
-                    <div class="clip-camera">📹 ${clip.camera}</div>
+                    <div class="clip-camera">📹 ${clip.camera}${badge}</div>
                     <div class="clip-filename">${clip.filename}</div>
                     <div class="clip-meta">
                         <span>${formatSize(clip.size)}</span>
@@ -1239,7 +1495,53 @@ const webUIHTML = `<!DOCTYPE html>
             section.classList.add('active');
             section.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
 
+            syncLabelButtons(clip.label || '');
             displayClips(); // Refresh to show playing state
+        }
+
+        function syncLabelButtons(label) {
+            document.querySelectorAll('.label-btn').forEach(b => b.classList.remove('active'));
+            if (label === 'tp')        document.querySelector('.label-btn.tp').classList.add('active');
+            if (label === 'fp')        document.querySelector('.label-btn.fp').classList.add('active');
+            if (label === 'reference') document.querySelector('.label-btn.ref').classList.add('active');
+            const statusEl = document.getElementById('labelStatus');
+            statusEl.textContent = label ? ` + "`Labeled: ${label}`" + ` : 'Unlabeled';
+        }
+
+        async function setLabel(label) {
+            if (!currentClip) return;
+            const { camera, filename } = currentClip;
+            try {
+                const resp = await fetch(` + "`/api/clips/${encodeURIComponent(camera)}/${encodeURIComponent(filename)}/label`" + `, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ label }),
+                });
+                if (!resp.ok) {
+                    const err = await resp.json().catch(() => ({ error: resp.statusText }));
+                    throw new Error(err.error || resp.statusText);
+                }
+                currentClip.label = label;
+                syncLabelButtons(label);
+                displayClips();
+            } catch (e) {
+                showError('Failed to set label: ' + e.message);
+            }
+        }
+
+        async function clearLabel() {
+            if (!currentClip) return;
+            const { camera, filename } = currentClip;
+            try {
+                await fetch(` + "`/api/clips/${encodeURIComponent(camera)}/${encodeURIComponent(filename)}/label`" + `, {
+                    method: 'DELETE',
+                });
+                currentClip.label = '';
+                syncLabelButtons('');
+                displayClips();
+            } catch (e) {
+                showError('Failed to clear label: ' + e.message);
+            }
         }
 
         function updateStats() {
