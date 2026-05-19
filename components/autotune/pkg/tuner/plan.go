@@ -70,8 +70,7 @@ func BuildPlan(
 		fpReduction = float64(baselineTable.FP-best.Table.FP) / float64(baselineTable.FP) * 100
 	}
 	if baselineTable.TP > 0 {
-		tpLoss = float64(baselineTable.FN-0) / float64(baselineTable.TP) * 100
-		// FN in best vs TP in baseline
+		// FN in best vs total actual positives in baseline
 		tpLoss = float64(best.Table.FN) / float64(baselineTable.TP+baselineTable.FN) * 100
 	}
 

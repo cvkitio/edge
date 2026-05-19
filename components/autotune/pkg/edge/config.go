@@ -34,8 +34,8 @@ func (c *Client) GetConfig(ctx context.Context, camera string) (*InspectorConfig
 	return &cfg, nil
 }
 
-// PutConfig updates the inspector configuration for a camera.
-// Only non-nil pointer fields in cfg are sent (partial update).
+// PutConfig replaces the inspector configuration for a camera.
+// All fields in cfg are sent; this is a full replace, not a partial update.
 func (c *Client) PutConfig(ctx context.Context, camera string, cfg *InspectorConfig) error {
 	b, err := json.Marshal(cfg)
 	if err != nil {

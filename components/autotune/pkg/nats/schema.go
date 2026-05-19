@@ -24,8 +24,8 @@ type Event struct {
 	BPFVar          float64   `json:"bpf_var"`
 	SinceKF         uint32    `json:"since_kf"`
 	Reason          string    `json:"reason"`
-	FSMBefore       string    `json:"fsm_before"`
-	FSMAfter        string    `json:"fsm_after"`
+	FSMBefore       uint8     `json:"fsm_before"`
+	FSMAfter        uint8     `json:"fsm_after"`
 	PTSStart        uint64    `json:"pts_start"`
 	PTSEnd          uint64    `json:"pts_end"`
 	Codec           string    `json:"codec"`

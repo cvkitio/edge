@@ -8,6 +8,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
+	"strings"
 	"sync"
 	"time"
 )
@@ -115,6 +117,11 @@ func (w *Writer) Close() error {
 func (cw *cameraWriter) write(root string, evt Event, maxBytes int64) error {
 	cw.mu.Lock()
 	defer cw.mu.Unlock()
+
+	if maxBytes > 0 && cw.size >= maxBytes {
+		return fmt.Errorf("eventlog: camera %s reached per-camera limit (%d bytes); run Sweep to reclaim space",
+			evt.Camera, maxBytes)
+	}
 
 	today := evt.TS.UTC().Format("2006-01-02")
 	if cw.f == nil || cw.date != today {
@@ -254,3 +261,71 @@ func (r *Reader) Range(from, to time.Time, limit int) ([]Event, error) {
 
 // Close is a no-op for Reader (files are opened and closed per Range call).
 func (r *Reader) Close() error { return nil }
+
+// Sweep deletes JSONL files older than RetentionDays under root for every
+// camera sub-directory. It also resets the in-memory size counter for any
+// camera whose files were removed so that Append can resume writing.
+// Safe to call concurrently with Append.
+func (w *Writer) Sweep() error {
+	cutoff := time.Now().UTC().AddDate(0, 0, -w.cfg.RetentionDays)
+
+	entries, err := os.ReadDir(w.root)
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("eventlog sweep: readdir: %w", err)
+	}
+
+	for _, camEntry := range entries {
+		if !camEntry.IsDir() {
+			continue
+		}
+		camera := camEntry.Name()
+		camDir := filepath.Join(w.root, camera)
+
+		files, err := os.ReadDir(camDir)
+		if err != nil {
+			continue
+		}
+
+		// Sort ascending so we delete oldest first.
+		sort.Slice(files, func(i, j int) bool {
+			return files[i].Name() < files[j].Name()
+		})
+
+		var freed int64
+		for _, f := range files {
+			if f.IsDir() || !strings.HasSuffix(f.Name(), ".jsonl") {
+				continue
+			}
+			dateStr := strings.TrimSuffix(f.Name(), ".jsonl")
+			fileDate, err := time.ParseInLocation("2006-01-02", dateStr, time.UTC)
+			if err != nil {
+				continue
+			}
+			if fileDate.Before(cutoff) {
+				path := filepath.Join(camDir, f.Name())
+				info, statErr := os.Stat(path)
+				if statErr == nil {
+					freed += info.Size()
+				}
+				_ = os.Remove(path)
+			}
+		}
+
+		if freed > 0 {
+			w.mu.Lock()
+			if cw, ok := w.files[camera]; ok {
+				cw.mu.Lock()
+				cw.size -= freed
+				if cw.size < 0 {
+					cw.size = 0
+				}
+				cw.mu.Unlock()
+			}
+			w.mu.Unlock()
+		}
+	}
+	return nil
+}

@@ -29,6 +29,8 @@ components/emd/tests/integration/__pycache__/
 # ── Deployment / operations (contain camera IPs and credentials) ─────────────
 components/emd/k8s/discovery.log
 components/emd/k8s/camera_list.txt
+components/emd/k8s/agent.toml
+components/emd/configs/axis_p4708.toml
 DEPLOYMENT_STATUS.md
 LIVE_MONITORING.md
 
@@ -41,3 +43,6 @@ LIVE_MONITORING.md
 
 # ── Git housekeeping ──────────────────────────────────────────────────────────
 .git.backup/
+
+.gemini/
+gha-creds-*.json

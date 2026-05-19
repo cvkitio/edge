@@ -70,6 +70,8 @@ type Candidate struct {
 	MotionZHigh       float64
 	MinBytesThreshold uint32
 	BPFRelativeFloor  float64
+	// Phase B — warmup ramp not yet simulated in wouldFire(); carried through
+	// for config round-trip only.
 	ZHighWarmup       float64
 	ZHighWarmupFrames uint16
 
