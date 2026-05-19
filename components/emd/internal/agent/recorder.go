@@ -96,7 +96,7 @@ func toLogEvent(evt libemd.Event, instanceID string) eventlog.Event {
 		Camera:          evt.CamName,
 		CamID:           evt.CamID,
 		TS:              evt.StartedTime,
-		TsMonoNs:        uint64(evt.StartedTime.UnixNano()),
+		TsMonoNs:        evt.StartedMonoNS,
 		Type:            evt.Type.String(),
 		ZScore:          evt.ZScore,
 		IntraRatio:      evt.IntraRatio,

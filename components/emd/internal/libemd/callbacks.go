@@ -26,13 +26,14 @@ func goEventTrampoline(userCtx unsafe.Pointer, cEvt *C.emd_event_t) {
 
 	// Convert C event to Go event
 	evt := Event{
-		ID:          C.GoString(&cEvt.event_id[0]),
-		CamID:       uint16(cEvt.cam_id),
-		Type:        EventType(cEvt._type),
-		Reason:      C.GoString(&cEvt.reason[0]),
-		StartedPTS:  uint64(cEvt.started_pts_90khz),
-		StartedTime: time.Now(),
-		Codec:       uint8(cEvt.codec),
+		ID:            C.GoString(&cEvt.event_id[0]),
+		CamID:         uint16(cEvt.cam_id),
+		Type:          EventType(cEvt._type),
+		Reason:        C.GoString(&cEvt.reason[0]),
+		StartedPTS:    uint64(cEvt.started_pts_90khz),
+		StartedMonoNS: uint64(cEvt.started_mono_ns),
+		StartedTime:   time.Now().UTC(),
+		Codec:         uint8(cEvt.codec),
 		FPS:         float64(cEvt.fps_estimate),
 		CamName:     C.GoString(&cEvt.cam_name[0]),
 		PreRollPTS:  uint64(cEvt.pre_roll_pts),

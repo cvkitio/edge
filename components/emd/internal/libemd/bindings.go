@@ -39,9 +39,10 @@ type Event struct {
 	CamID       uint16
 	Type        EventType
 	Reason      string
-	StartedPTS  uint64 // 90 kHz
-	StartedTime time.Time
-	Codec       uint8 // 1=h264, 2=h265
+	StartedPTS    uint64 // 90 kHz
+	StartedTime   time.Time
+	StartedMonoNS uint64 // monotonic ns from C (emd_event_t.started_mono_ns)
+	Codec         uint8  // 1=h264, 2=h265
 	FPS         float64
 	CamName     string
 	PreRollPTS  uint64
@@ -115,20 +116,24 @@ type CameraConfig struct {
 
 // toCConfig converts a Go CameraConfig to C emd_camera_cfg_t.
 func (cfg *CameraConfig) toCConfig() *C.emd_camera_cfg_t {
-	c := (*C.emd_camera_cfg_t)(C.malloc(C.sizeof_emd_camera_cfg_t))
+	// Use calloc so all fields (including string arrays) are zero-initialised.
+	// This guarantees NUL termination even when Name/URL fill the buffer exactly.
+	c := (*C.emd_camera_cfg_t)(C.calloc(1, C.sizeof_emd_camera_cfg_t))
 	if c == nil {
 		return nil
 	}
 
-	// Copy string fields
-	nameBytes := append([]byte(cfg.Name), 0)
-	urlBytes := append([]byte(cfg.URL), 0)
+	// Copy string fields — calloc guarantees a trailing NUL in all cases.
+	nameBytes := []byte(cfg.Name)
+	urlBytes := []byte(cfg.URL)
 
-	// Manually copy bytes (strncpy equivalent)
-	for i := 0; i < len(nameBytes) && i < int(C.EMD_MAX_CAM_NAME_LEN); i++ {
+	// Manually copy bytes (strncpy equivalent), leaving last byte as NUL.
+	nameMax := int(C.EMD_MAX_CAM_NAME_LEN) - 1
+	for i := 0; i < len(nameBytes) && i < nameMax; i++ {
 		c.name[i] = C.char(nameBytes[i])
 	}
-	for i := 0; i < len(urlBytes) && i < int(C.EMD_MAX_URL_LEN); i++ {
+	urlMax := int(C.EMD_MAX_URL_LEN) - 1
+	for i := 0; i < len(urlBytes) && i < urlMax; i++ {
 		c.url[i] = C.char(urlBytes[i])
 	}
 
