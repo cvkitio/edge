@@ -8,6 +8,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/cvkitio/cvkit/edge/emd-agent/internal/eventlog"
 	"github.com/cvkitio/cvkit/edge/emd-agent/internal/libemd"
 )
 
@@ -17,16 +18,18 @@ type RecorderWorker struct {
 	cameras    map[string]*libemd.Camera // camera name -> camera handle
 	camerasMux sync.RWMutex
 	eventCh    <-chan libemd.Event
+	eventLog   *eventlog.Writer
 	ctx        chan struct{} // for shutdown
 }
 
 // NewRecorderWorker creates a new recorder worker.
-func NewRecorderWorker(cfg *Config, eventCh <-chan libemd.Event) *RecorderWorker {
+func NewRecorderWorker(cfg *Config, eventCh <-chan libemd.Event, evLog *eventlog.Writer) *RecorderWorker {
 	return &RecorderWorker{
-		cfg:     cfg,
-		cameras: make(map[string]*libemd.Camera),
-		eventCh: eventCh,
-		ctx:     make(chan struct{}),
+		cfg:      cfg,
+		cameras:  make(map[string]*libemd.Camera),
+		eventCh:  eventCh,
+		eventLog: evLog,
+		ctx:      make(chan struct{}),
 	}
 }
 
@@ -62,11 +65,55 @@ func (r *RecorderWorker) processEvents() {
 		case <-r.ctx:
 			return
 		case evt := <-r.eventCh:
-			// Only record motion events
+			log.Printf("EVENT: cam=%s type=%s reason=%s z=%.2f bpf_slow=%.0f bytes=%d",
+				evt.CamName, evt.Type, evt.Reason, evt.ZScore, evt.BPFSlow, evt.Bytes)
+
+			// Write to event log regardless of event type.
+			if r.eventLog != nil {
+				logEvt := toLogEvent(evt, r.cfg.Agent.InstanceID)
+				if err := r.eventLog.Append(logEvt); err != nil {
+					log.Printf("eventlog: append failed for %s: %v", evt.CamName, err)
+				}
+			}
+
+			// Only record motion events.
 			if evt.Type == libemd.EventMotion {
 				go r.recordClip(evt)
 			}
 		}
+	}
+}
+
+// toLogEvent converts a libemd.Event to an eventlog.Event.
+func toLogEvent(evt libemd.Event, instanceID string) eventlog.Event {
+	codecStr := "h264"
+	if evt.Codec == 2 {
+		codecStr = "h265"
+	}
+	return eventlog.Event{
+		EventID:         evt.ID,
+		Site:            instanceID,
+		Camera:          evt.CamName,
+		CamID:           evt.CamID,
+		TS:              evt.StartedTime,
+		TsMonoNs:        uint64(evt.StartedTime.UnixNano()),
+		Type:            evt.Type.String(),
+		ZScore:          evt.ZScore,
+		IntraRatio:      evt.IntraRatio,
+		Bytes:           evt.Bytes,
+		BPFSlow:         evt.BPFSlow,
+		BPFEwma:         evt.BPFEwma,
+		BPFVar:          evt.BPFVar,
+		SinceKF:         evt.SinceKF,
+		FSMBefore:       evt.FSMBefore,
+		FSMAfter:        evt.FSMAfter,
+		Reason:          evt.Reason,
+		PTSStart:        evt.PreRollPTS,
+		PTSEnd:          evt.PostRollPTS,
+		Codec:           codecStr,
+		FPS:             evt.FPS,
+		TargetClassMask: evt.TargetClassMask,
+		AgentVersion:    Version,
 	}
 }
 

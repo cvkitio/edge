@@ -34,7 +34,7 @@ extern "C" {
  * ------------------------------------------------------------------------- */
 
 #define EMD_ABI_VERSION_MAJOR 1
-#define EMD_ABI_VERSION_MINOR 0
+#define EMD_ABI_VERSION_MINOR 1  /* added inspector signal snapshot to emd_event_t */
 #define EMD_ABI_VERSION_PATCH 0
 
 /*

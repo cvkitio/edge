@@ -31,12 +31,24 @@ func goEventTrampoline(userCtx unsafe.Pointer, cEvt *C.emd_event_t) {
 		Type:        EventType(cEvt._type),
 		Reason:      C.GoString(&cEvt.reason[0]),
 		StartedPTS:  uint64(cEvt.started_pts_90khz),
-		StartedTime: time.Unix(0, int64(cEvt.started_mono_ns)),
+		StartedTime: time.Now(),
 		Codec:       uint8(cEvt.codec),
 		FPS:         float64(cEvt.fps_estimate),
 		CamName:     C.GoString(&cEvt.cam_name[0]),
 		PreRollPTS:  uint64(cEvt.pre_roll_pts),
 		PostRollPTS: uint64(cEvt.post_roll_pts),
+
+		// Inspector signal snapshot
+		ZScore:          float64(cEvt.z_score),
+		IntraRatio:      float64(cEvt.intra_ratio),
+		Bytes:           uint64(cEvt.byte_count),
+		BPFSlow:         float64(cEvt.bpf_slow),
+		BPFEwma:         float64(cEvt.bpf_ewma),
+		BPFVar:          float64(cEvt.bpf_var),
+		SinceKF:         uint32(cEvt.since_kf),
+		FSMBefore:       uint8(cEvt.fsm_before),
+		FSMAfter:        uint8(cEvt.fsm_after),
+		TargetClassMask: uint8(cEvt.target_class_mask),
 	}
 
 	// Non-blocking send (drop if channel is full)

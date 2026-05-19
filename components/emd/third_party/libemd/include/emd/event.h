@@ -27,6 +27,18 @@ typedef struct {
     uint8_t          codec;          /* 1=h264, 2=h265 */
     double           fps_estimate;
     char             cam_name[64];
+
+    /* Inspector signal snapshot — written at trigger time for autotune */
+    double           z_score;           /* z-score of the trigger frame */
+    double           intra_ratio;       /* intra-ratio proxy at trigger time */
+    uint64_t         byte_count;        /* bytes in the trigger access unit */
+    double           bpf_slow;          /* slow EWMA baseline at trigger time */
+    double           bpf_ewma;          /* fast EWMA at trigger time */
+    double           bpf_var;           /* variance estimate at trigger time */
+    uint32_t         since_kf;          /* frames since last IDR at trigger time */
+    uint8_t          fsm_before;        /* FSM state before this event transition */
+    uint8_t          fsm_after;         /* FSM state after this event transition */
+    uint8_t          target_class_mask; /* Phase B: vision class filter (0 = any) */
 } emd_event_t;
 
 /* -------------------------------------------------------------------------

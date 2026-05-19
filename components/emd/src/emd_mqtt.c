@@ -442,7 +442,7 @@ int emd_mqtt_build_event_payload(const emd_event_t *ev,
     if (!ev || !buf || bufsz == 0) return -1;
     int n = snprintf(buf, bufsz,
         "{"
-        "\"v\":1,"
+        "\"v\":2,"
         "\"instance\":\"%s\","
         "\"cam_id\":\"%s\","
         "\"event_id\":\"%s\","
@@ -450,7 +450,16 @@ int emd_mqtt_build_event_payload(const emd_event_t *ev,
         "\"reason\":\"%s\","
         "\"started_pts_90khz\":%" PRIu64 ","
         "\"fps_estimate\":%.2f,"
-        "\"codec\":\"%s\""
+        "\"codec\":\"%s\","
+        "\"z_score\":%.4f,"
+        "\"intra_ratio\":%.4f,"
+        "\"byte_count\":%" PRIu64 ","
+        "\"bpf_slow\":%.4f,"
+        "\"bpf_ewma\":%.4f,"
+        "\"bpf_var\":%.4f,"
+        "\"since_kf\":%" PRIu32 ","
+        "\"fsm_before\":%u,"
+        "\"fsm_after\":%u"
         "}",
         instance,
         ev->cam_name,
@@ -459,7 +468,16 @@ int emd_mqtt_build_event_payload(const emd_event_t *ev,
         ev->reason,
         ev->started_pts_90khz,
         ev->fps_estimate,
-        emd_codec_name(ev->codec));
+        emd_codec_name(ev->codec),
+        ev->z_score,
+        ev->intra_ratio,
+        ev->byte_count,
+        ev->bpf_slow,
+        ev->bpf_ewma,
+        ev->bpf_var,
+        ev->since_kf,
+        (unsigned)ev->fsm_before,
+        (unsigned)ev->fsm_after);
     return (n > 0 && (size_t)n < bufsz) ? n : -1;
 }
 

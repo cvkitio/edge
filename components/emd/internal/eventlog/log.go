@@ -32,6 +32,10 @@ type Event struct {
 	Bytes           uint64    `json:"bytes"`
 	BPFSlow         float64   `json:"bpf_slow"`
 	BPFEwma         float64   `json:"bpf_ewma"`
+	BPFVar          float64   `json:"bpf_var"`
+	SinceKF         uint32    `json:"since_kf"`
+	FSMBefore       uint8     `json:"fsm_before"`
+	FSMAfter        uint8     `json:"fsm_after"`
 	Reason          string    `json:"reason"`
 	PTSStart        uint64    `json:"pts_start"`
 	PTSEnd          uint64    `json:"pts_end"`

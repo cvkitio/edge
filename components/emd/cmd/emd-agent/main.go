@@ -92,6 +92,14 @@ func main() {
 
 	log.Printf("loaded %d cameras from config", len(cfg.Cameras))
 
+	// Wire C library log level from config
+	if ok := libemd.SetLogLevelFromString(cfg.Runtime.LogLevel); !ok {
+		log.Printf("warning: unknown log_level %q, defaulting to info", cfg.Runtime.LogLevel)
+		libemd.SetLogLevel(libemd.LogLevelInfo)
+	} else {
+		log.Printf("C library log level: %s", cfg.Runtime.LogLevel)
+	}
+
 	// Initialize Prometheus metrics
 	promMetrics := metrics.New()
 	promMetrics.CameraTotal.Set(float64(len(cfg.Cameras)))
@@ -113,7 +121,7 @@ func main() {
 	}()
 
 	// Start API server
-	apiHandler := api.NewHandler(supervisor, cfg.Runtime.ClipRoot)
+	apiHandler := api.NewHandler(supervisor, cfg.Runtime.ClipRoot, supervisor.GetEventLogRoot())
 	apiMux := http.NewServeMux()
 	apiHandler.RegisterRoutes(apiMux)
 

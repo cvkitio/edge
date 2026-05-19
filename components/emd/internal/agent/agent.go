@@ -31,8 +31,8 @@ func Run(ctx context.Context, configPath string) error {
 	eventCh := make(chan libemd.Event, 1000)  // Buffer for all cameras
 	statsCh := make(chan libemd.StatsSample, 100)
 
-	// Create recorder worker
-	recorder := NewRecorderWorker(cfg, eventCh)
+	// Create recorder worker (no eventlog in the legacy Run path).
+	recorder := NewRecorderWorker(cfg, eventCh, nil)
 	recorder.Start()
 	defer recorder.Stop()
 
@@ -76,14 +76,10 @@ func Run(ctx context.Context, configPath string) error {
 		log.Printf("started camera worker: %s (cam_id=%d)", name, libCfg.CamID)
 	}
 
-	// Stats logger (events are handled by recorder)
+	// Stats logger — recorder owns eventCh exclusively.
 	go func() {
 		for {
 			select {
-			case evt := <-eventCh:
-				// Log event (recorder will handle clip creation)
-				log.Printf("EVENT: cam=%s type=%s reason=%s pts=%d",
-					evt.CamName, evt.Type, evt.Reason, evt.StartedPTS)
 			case sample := <-statsCh:
 				log.Printf("STATS: cam=%d bpf_ewma=%.1f fsm=%d rtsp=%d",
 					sample.CamID, sample.BPFEwma, sample.FSMState, sample.RTSPState)

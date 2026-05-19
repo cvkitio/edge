@@ -3,8 +3,10 @@ package agent
 import (
 	"context"
 	"log"
+	"path/filepath"
 	"sync"
 
+	"github.com/cvkitio/cvkit/edge/emd-agent/internal/eventlog"
 	"github.com/cvkitio/cvkit/edge/emd-agent/internal/libemd"
 	"github.com/cvkitio/cvkit/edge/emd-agent/internal/metrics"
 )
@@ -14,6 +16,7 @@ type Supervisor struct {
 	cfg         *Config
 	recorder    *RecorderWorker
 	diskMgr     *DiskManager
+	eventLog    *eventlog.Writer
 	eventCh     chan libemd.Event
 	statsCh     chan libemd.StatsSample
 	stopCh      chan struct{}
@@ -22,28 +25,47 @@ type Supervisor struct {
 	cameraReady map[string]bool
 }
 
+// eventLogRoot returns the effective eventlog directory, defaulting to a
+// sibling of the clip root when not explicitly configured.
+func eventLogRoot(cfg *Config) string {
+	if cfg.Runtime.EventLogRoot != "" {
+		return cfg.Runtime.EventLogRoot
+	}
+	if cfg.Runtime.ClipRoot != "" {
+		return filepath.Join(filepath.Dir(cfg.Runtime.ClipRoot), "eventlog")
+	}
+	return "/var/lib/emd/eventlog"
+}
+
 // NewSupervisor creates a new supervisor.
-func NewSupervisor(cfg *Config, metrics *metrics.Metrics) *Supervisor {
-	// Create global event and stats channels
+func NewSupervisor(cfg *Config, m *metrics.Metrics) *Supervisor {
+	// Create global event and stats channels.
 	eventCh := make(chan libemd.Event, 1000)
 	statsCh := make(chan libemd.StatsSample, 100)
 
-	// Create recorder worker
-	recorder := NewRecorderWorker(cfg, eventCh)
+	// Open the per-camera JSONL event log.
+	evLog, err := eventlog.New(eventLogRoot(cfg), eventlog.Config{})
+	if err != nil {
+		log.Printf("warning: could not open event log: %v", err)
+	}
 
-	// Get camera names for disk manager
+	// Create recorder worker — it is the single consumer of eventCh.
+	recorder := NewRecorderWorker(cfg, eventCh, evLog)
+
+	// Get camera names for disk manager.
 	cameraNames := make([]string, 0, len(cfg.Cameras))
 	for name := range cfg.Cameras {
 		cameraNames = append(cameraNames, name)
 	}
 
-	// Create disk manager
-	diskMgr := NewDiskManager(cfg, metrics, cameraNames)
+	// Create disk manager.
+	diskMgr := NewDiskManager(cfg, m, cameraNames)
 
 	return &Supervisor{
 		cfg:         cfg,
 		recorder:    recorder,
 		diskMgr:     diskMgr,
+		eventLog:    evLog,
 		eventCh:     eventCh,
 		statsCh:     statsCh,
 		stopCh:      make(chan struct{}),
@@ -92,14 +114,10 @@ func (s *Supervisor) Start(ctx context.Context) error {
 		log.Printf("started camera worker: %s (cam_id=%d)", name, libCfg.CamID)
 	}
 
-	// Stats logger (events are handled by recorder)
+	// Stats logger — recorder owns the event channel, we only watch stats here.
 	go func() {
 		for {
 			select {
-			case evt := <-s.eventCh:
-				// Log event (recorder will handle clip creation)
-				log.Printf("EVENT: cam=%s type=%s reason=%s pts=%d",
-					evt.CamName, evt.Type, evt.Reason, evt.StartedPTS)
 			case sample := <-s.statsCh:
 				log.Printf("STATS: cam=%d bpf_ewma=%.1f fsm=%d rtsp=%d",
 					sample.CamID, sample.BPFEwma, sample.FSMState, sample.RTSPState)
@@ -109,17 +127,23 @@ func (s *Supervisor) Start(ctx context.Context) error {
 		}
 	}()
 
-	// Wait for shutdown signal
+	// Wait for shutdown signal.
 	<-ctx.Done()
 	log.Printf("supervisor shutting down")
 	close(s.stopCh)
 
-	// Wait for all camera workers to exit
+	// Wait for all camera workers to exit.
 	s.wg.Wait()
 	log.Printf("all camera workers stopped")
 
 	s.recorder.Stop()
 	s.diskMgr.Stop()
+
+	if s.eventLog != nil {
+		if err := s.eventLog.Close(); err != nil {
+			log.Printf("eventlog close: %v", err)
+		}
+	}
 
 	return nil
 }
@@ -127,6 +151,11 @@ func (s *Supervisor) Start(ctx context.Context) error {
 // GetRecorder returns the recorder worker.
 func (s *Supervisor) GetRecorder() *RecorderWorker {
 	return s.recorder
+}
+
+// GetEventLogRoot returns the root directory used for per-camera JSONL event logs.
+func (s *Supervisor) GetEventLogRoot() string {
+	return eventLogRoot(s.cfg)
 }
 
 // GetCameraNames returns a list of all camera names.
