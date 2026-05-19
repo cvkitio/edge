@@ -46,6 +46,18 @@ type Event struct {
 	CamName     string
 	PreRollPTS  uint64
 	PostRollPTS uint64
+
+	// Inspector signal snapshot — autotune grid search inputs.
+	ZScore          float64
+	IntraRatio      float64
+	Bytes           uint64
+	BPFSlow         float64
+	BPFEwma         float64
+	BPFVar          float64
+	SinceKF         uint32
+	FSMBefore       uint8
+	FSMAfter        uint8
+	TargetClassMask uint8
 }
 
 // EventType represents the type of detection event.
@@ -83,21 +95,22 @@ type StatsSample struct {
 
 // CameraConfig mirrors emd_camera_cfg_t from C.
 type CameraConfig struct {
-	Name              string
-	URL               string
-	CamID             uint16
-	Transport         uint8 // 0=TCP, 1=UDP
-	CodecHint         uint8 // 0=auto, 1=h264, 2=h265
-	BufferSeconds     uint32
-	PreRollSeconds    uint32
-	PostRollSeconds   uint32
-	ClipMaxSeconds    uint32
-	MaxBitrateBPS     uint32
-	MotionZHigh       float64
-	IntraRatioHigh    float64
-	OnThreshold       uint8
-	OffThreshold      uint8
-	GradualEnabled    bool
+	Name               string
+	URL                string
+	CamID              uint16
+	Transport          uint8 // 0=TCP, 1=UDP
+	CodecHint          uint8 // 0=auto, 1=h264, 2=h265
+	BufferSeconds      uint32
+	PreRollSeconds     uint32
+	PostRollSeconds    uint32
+	ClipMaxSeconds     uint32
+	MaxBitrateBPS      uint32
+	MotionZHigh        float64
+	IntraRatioHigh     float64
+	OnThreshold        uint8
+	OffThreshold       uint8
+	GradualEnabled     bool
+	MinBytesThreshold  uint32 // suppress events below this NAL byte count
 }
 
 // toCConfig converts a Go CameraConfig to C emd_camera_cfg_t.
@@ -133,6 +146,7 @@ func (cfg *CameraConfig) toCConfig() *C.emd_camera_cfg_t {
 	c.on_threshold = C.uint8_t(cfg.OnThreshold)
 	c.off_threshold = C.uint8_t(cfg.OffThreshold)
 	c.gradual_enabled = C.bool(cfg.GradualEnabled)
+	c.min_bytes_threshold = C.uint32_t(cfg.MinBytesThreshold)
 
 	return c
 }

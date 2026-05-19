@@ -77,6 +77,7 @@ typedef struct {
     uint8_t  on_threshold;
     uint8_t  off_threshold;
     double   bpf_floor;           /* minimum denominator to prevent div/0 */
+    uint32_t min_bytes_threshold; /* suppress events below this NAL byte count */
     bool     configured_periodic_kf;
 
     /* Gradual */
@@ -99,11 +100,13 @@ typedef struct {
 
 /* Result returned per frame */
 typedef struct {
-    emd_event_type_t event;
-    double z_score;
-    double intra_ratio;
-    char   reason[128];  /* human-readable, e.g. "z=4.7,intra_ratio=3.1" */
-    bool   state_changed;
+    emd_event_type_t   event;
+    double             z_score;
+    double             intra_ratio;
+    char               reason[128];  /* human-readable, e.g. "z=4.7,intra_ratio=3.1" */
+    bool               state_changed;
+    uint8_t            fsm_before;   /* emd_inspector_fsm_t value before transition */
+    uint8_t            fsm_after;    /* emd_inspector_fsm_t value after transition */
 } emd_inspector_result_t;
 
 /* Inspector defaults */

@@ -28,6 +28,7 @@ type RuntimeConfig struct {
 	LogLevel      string `toml:"log_level"`
 	ClipRoot      string `toml:"clip_root"`
 	InflightRoot  string `toml:"inflight_root"`
+	EventLogRoot  string `toml:"event_log_root"` // default: <clip_root>/../eventlog
 }
 
 type RecordingConfig struct {
@@ -41,19 +42,20 @@ type DiskConfig struct {
 }
 
 type CameraConfig struct {
-	URL              string  `toml:"url"`
-	Transport        string  `toml:"transport"`
-	CodecHint        string  `toml:"codec_hint"`
-	BufferSeconds    uint32  `toml:"buffer_seconds"`
-	PreRollSeconds   uint32  `toml:"pre_roll_seconds"`
-	PostRollSeconds  uint32  `toml:"post_roll_seconds"`
-	ClipMaxSeconds   uint32  `toml:"clip_max_seconds"`
-	MotionZHigh      float64 `toml:"motion_z_high"`
-	IntraRatioHigh   float64 `toml:"intra_ratio_high"`
-	OnThreshold      uint8   `toml:"on_threshold"`
-	OffThreshold     uint8   `toml:"off_threshold"`
-	GradualEnabled   bool    `toml:"gradual_enabled"`
-	MaxBitrateBPS    uint32  `toml:"max_bitrate_bps"`
+	URL                string  `toml:"url"`
+	Transport          string  `toml:"transport"`
+	CodecHint          string  `toml:"codec_hint"`
+	BufferSeconds      uint32  `toml:"buffer_seconds"`
+	PreRollSeconds     uint32  `toml:"pre_roll_seconds"`
+	PostRollSeconds    uint32  `toml:"post_roll_seconds"`
+	ClipMaxSeconds     uint32  `toml:"clip_max_seconds"`
+	MotionZHigh        float64 `toml:"motion_z_high"`
+	IntraRatioHigh     float64 `toml:"intra_ratio_high"`
+	OnThreshold        uint8   `toml:"on_threshold"`
+	OffThreshold       uint8   `toml:"off_threshold"`
+	GradualEnabled     bool    `toml:"gradual_enabled"`
+	MaxBitrateBPS      uint32  `toml:"max_bitrate_bps"`
+	MinBytesThreshold  uint32  `toml:"min_bytes_threshold"`
 }
 
 // LoadConfig loads the agent configuration from a TOML file.
@@ -86,20 +88,21 @@ func (c *CameraConfig) ToLibemdConfig(name string, camID uint16) *libemd.CameraC
 	}
 
 	return &libemd.CameraConfig{
-		Name:            name,
-		URL:             c.URL,
-		CamID:           camID,
-		Transport:       transport,
-		CodecHint:       codecHint,
-		BufferSeconds:   c.BufferSeconds,
-		PreRollSeconds:  c.PreRollSeconds,
-		PostRollSeconds: c.PostRollSeconds,
-		ClipMaxSeconds:  c.ClipMaxSeconds,
-		MaxBitrateBPS:   c.MaxBitrateBPS,
-		MotionZHigh:     c.MotionZHigh,
-		IntraRatioHigh:  c.IntraRatioHigh,
-		OnThreshold:     c.OnThreshold,
-		OffThreshold:    c.OffThreshold,
-		GradualEnabled:  c.GradualEnabled,
+		Name:               name,
+		URL:                c.URL,
+		CamID:              camID,
+		Transport:          transport,
+		CodecHint:          codecHint,
+		BufferSeconds:      c.BufferSeconds,
+		PreRollSeconds:     c.PreRollSeconds,
+		PostRollSeconds:    c.PostRollSeconds,
+		ClipMaxSeconds:     c.ClipMaxSeconds,
+		MaxBitrateBPS:      c.MaxBitrateBPS,
+		MotionZHigh:        c.MotionZHigh,
+		IntraRatioHigh:     c.IntraRatioHigh,
+		OnThreshold:        c.OnThreshold,
+		OffThreshold:       c.OffThreshold,
+		GradualEnabled:     c.GradualEnabled,
+		MinBytesThreshold:  c.MinBytesThreshold,
 	}
 }

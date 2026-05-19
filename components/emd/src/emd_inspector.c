@@ -116,8 +116,13 @@ bool emd_inspector_process(emd_inspector_state_t *s,
     /* Detection rule */
     bool is_unexpected_idr = (in->is_keyframe && s->since_kf == 0 &&
                                !cfg->configured_periodic_kf);
-    bool is_z_motion       = (z > cfg->motion_z_high);
-    bool is_intra_motion   = (in->intra_ratio_proxy > cfg->intra_ratio_high);
+    /* Byte floor: suppress signals from NAL units below the configured threshold.
+     * This rejects brief encoder artefacts that produce high z-scores but negligible
+     * actual change (e.g. a single bright frame from IR illumination flicker). */
+    bool bytes_ok = (cfg->min_bytes_threshold == 0 ||
+                     in->byte_count >= cfg->min_bytes_threshold);
+    bool is_z_motion       = bytes_ok && (z > cfg->motion_z_high);
+    bool is_intra_motion   = bytes_ok && (in->intra_ratio_proxy > cfg->intra_ratio_high);
 
     bool signal = is_z_motion || is_unexpected_idr || is_intra_motion;
 
@@ -143,6 +148,7 @@ bool emd_inspector_process(emd_inspector_state_t *s,
 
     /* Debounce state machine (§7.4) */
     emd_inspector_fsm_t prev_fsm = s->fsm;
+    result_out->fsm_before = (uint8_t)prev_fsm;
     bool event_raised = false;
 
     switch (s->fsm) {
@@ -184,6 +190,7 @@ bool emd_inspector_process(emd_inspector_state_t *s,
     }
 
     result_out->state_changed = (s->fsm != prev_fsm);
+    result_out->fsm_after     = (uint8_t)s->fsm;
 
     /* Gradual scene change detection (§7.5) */
     if (!event_raised && cfg->gradual_enabled && s->bpf_vslow > 0.0) {

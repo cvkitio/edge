@@ -1,0 +1,234 @@
+# emd-agent configuration for au01-0 cluster
+# 14 Axis cameras (VLAN 81 + VLAN 82)
+
+[agent]
+mode              = "single"
+instance_id       = "au01-0"
+data_dir          = "/var/lib/emd-agent"
+sd_notify         = false
+
+[runtime]
+log_level         = "info"
+clip_root         = "/var/lib/emd-agent/clips"
+inflight_root     = "/var/lib/emd-agent/inflight"
+
+[recording]
+container         = "mpegts"
+fsync_policy      = "on_close"
+
+[disk]
+max_bytes_per_camera = 2_000_000_000
+retention_days       = 7
+
+# VLAN 81 - 12 cameras
+[cameras.axis_81_1]
+url               = "rtsp://root:D%40m3CCTV@10.45.81.1/axis-media/media.amp?videocodec=h264"
+transport         = "tcp"
+codec_hint        = "h264"
+buffer_seconds    = 20
+pre_roll_seconds  = 10
+post_roll_seconds = 10
+clip_max_seconds  = 120
+motion_z_high     = 4.0
+min_bytes_threshold = 6000
+intra_ratio_high  = 2.5
+on_threshold      = 2
+off_threshold     = 15
+gradual_enabled   = false
+max_bitrate_bps   = 8000000
+
+[cameras.axis_81_2]
+url               = "rtsp://root:D%40m3CCTV@10.45.81.2/axis-media/media.amp?videocodec=h264"
+transport         = "tcp"
+codec_hint        = "h264"
+buffer_seconds    = 20
+pre_roll_seconds  = 10
+post_roll_seconds = 10
+clip_max_seconds  = 120
+motion_z_high     = 4.0
+intra_ratio_high  = 2.5
+on_threshold      = 2
+off_threshold     = 15
+gradual_enabled   = false
+max_bitrate_bps   = 8000000
+
+[cameras.axis_81_3]
+url               = "rtsp://root:D%40m3CCTV@10.45.81.3/axis-media/media.amp?videocodec=h264"
+transport         = "tcp"
+codec_hint        = "h264"
+buffer_seconds    = 20
+pre_roll_seconds  = 10
+post_roll_seconds = 10
+clip_max_seconds  = 120
+motion_z_high     = 4.0
+intra_ratio_high  = 2.5
+on_threshold      = 2
+off_threshold     = 15
+gradual_enabled   = false
+max_bitrate_bps   = 8000000
+
+[cameras.axis_81_4]
+url               = "rtsp://root:D%40m3CCTV@10.45.81.4/axis-media/media.amp?videocodec=h264"
+transport         = "tcp"
+codec_hint        = "h264"
+buffer_seconds    = 20
+pre_roll_seconds  = 10
+post_roll_seconds = 10
+clip_max_seconds  = 120
+motion_z_high     = 4.0
+intra_ratio_high  = 2.5
+on_threshold      = 2
+off_threshold     = 15
+gradual_enabled   = false
+max_bitrate_bps   = 8000000
+
+[cameras.axis_81_5]
+url               = "rtsp://root:D%40m3CCTV@10.45.81.5/axis-media/media.amp?videocodec=h264"
+transport         = "tcp"
+codec_hint        = "h264"
+buffer_seconds    = 20
+pre_roll_seconds  = 10
+post_roll_seconds = 10
+clip_max_seconds  = 120
+motion_z_high     = 4.0
+intra_ratio_high  = 2.5
+on_threshold      = 2
+off_threshold     = 15
+gradual_enabled   = false
+max_bitrate_bps   = 8000000
+
+[cameras.axis_81_6]
+url               = "rtsp://root:D%40m3CCTV@10.45.81.6/axis-media/media.amp?videocodec=h264"
+transport         = "tcp"
+codec_hint        = "h264"
+buffer_seconds    = 20
+pre_roll_seconds  = 10
+post_roll_seconds = 10
+clip_max_seconds  = 120
+motion_z_high     = 4.0
+intra_ratio_high  = 2.5
+on_threshold      = 2
+off_threshold     = 15
+gradual_enabled   = false
+max_bitrate_bps   = 8000000
+
+[cameras.axis_81_7]
+url               = "rtsp://root:D%40m3CCTV@10.45.81.7/axis-media/media.amp?videocodec=h264"
+transport         = "tcp"
+codec_hint        = "h264"
+buffer_seconds    = 20
+pre_roll_seconds  = 10
+post_roll_seconds = 10
+clip_max_seconds  = 120
+motion_z_high     = 4.0
+intra_ratio_high  = 2.5
+on_threshold      = 2
+off_threshold     = 15
+gradual_enabled   = false
+max_bitrate_bps   = 8000000
+
+[cameras.axis_81_8]
+url               = "rtsp://root:D%40m3CCTV@10.45.81.8/axis-media/media.amp?videocodec=h264"
+transport         = "tcp"
+codec_hint        = "h264"
+buffer_seconds    = 20
+pre_roll_seconds  = 10
+post_roll_seconds = 10
+clip_max_seconds  = 120
+motion_z_high     = 4.0
+intra_ratio_high  = 2.5
+on_threshold      = 2
+off_threshold     = 15
+gradual_enabled   = false
+max_bitrate_bps   = 8000000
+
+[cameras.axis_81_9]
+url               = "rtsp://root:D%40m3CCTV@10.45.81.9/axis-media/media.amp?videocodec=h264"
+transport         = "tcp"
+codec_hint        = "h264"
+buffer_seconds    = 20
+pre_roll_seconds  = 10
+post_roll_seconds = 10
+clip_max_seconds  = 120
+motion_z_high     = 4.0
+intra_ratio_high  = 2.5
+on_threshold      = 2
+off_threshold     = 15
+gradual_enabled   = false
+max_bitrate_bps   = 8000000
+
+[cameras.axis_81_10]
+url               = "rtsp://root:D%40m3CCTV@10.45.81.10/axis-media/media.amp?videocodec=h264"
+transport         = "tcp"
+codec_hint        = "h264"
+buffer_seconds    = 20
+pre_roll_seconds  = 10
+post_roll_seconds = 10
+clip_max_seconds  = 120
+motion_z_high     = 4.0
+intra_ratio_high  = 2.5
+on_threshold      = 2
+off_threshold     = 15
+gradual_enabled   = false
+max_bitrate_bps   = 8000000
+
+[cameras.axis_81_11]
+url               = "rtsp://root:D%40m3CCTV@10.45.81.11/axis-media/media.amp?videocodec=h264"
+transport         = "tcp"
+codec_hint        = "h264"
+buffer_seconds    = 20
+pre_roll_seconds  = 10
+post_roll_seconds = 10
+clip_max_seconds  = 120
+motion_z_high     = 4.0
+intra_ratio_high  = 2.5
+on_threshold      = 2
+off_threshold     = 15
+gradual_enabled   = false
+max_bitrate_bps   = 8000000
+
+[cameras.axis_81_12]
+url               = "rtsp://root:D%40m3CCTV@10.45.81.12/axis-media/media.amp?videocodec=h264"
+transport         = "tcp"
+codec_hint        = "h264"
+buffer_seconds    = 20
+pre_roll_seconds  = 10
+post_roll_seconds = 10
+clip_max_seconds  = 120
+motion_z_high     = 4.0
+intra_ratio_high  = 2.5
+on_threshold      = 2
+off_threshold     = 15
+gradual_enabled   = false
+max_bitrate_bps   = 8000000
+
+# VLAN 82 - 2 cameras
+[cameras.axis_82_1]
+url               = "rtsp://root:D%40m3CCTV@10.45.82.1/axis-media/media.amp?videocodec=h264"
+transport         = "tcp"
+codec_hint        = "h264"
+buffer_seconds    = 20
+pre_roll_seconds  = 10
+post_roll_seconds = 10
+clip_max_seconds  = 120
+motion_z_high     = 4.0
+intra_ratio_high  = 2.5
+on_threshold      = 2
+off_threshold     = 15
+gradual_enabled   = false
+max_bitrate_bps   = 8000000
+
+[cameras.axis_82_2]
+url               = "rtsp://root:D%40m3CCTV@10.45.82.2/axis-media/media.amp?videocodec=h264"
+transport         = "tcp"
+codec_hint        = "h264"
+buffer_seconds    = 20
+pre_roll_seconds  = 10
+post_roll_seconds = 10
+clip_max_seconds  = 120
+motion_z_high     = 4.0
+intra_ratio_high  = 2.5
+on_threshold      = 2
+off_threshold     = 15
+gradual_enabled   = false
+max_bitrate_bps   = 8000000

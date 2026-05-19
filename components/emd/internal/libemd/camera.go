@@ -174,6 +174,7 @@ type InspectorConfig struct {
 	OnThreshold          uint8
 	OffThreshold         uint8
 	BPFFloor             float64
+	MinBytesThreshold    uint32
 	ConfiguredPeriodicKF bool
 	GradualEnabled       bool
 	GradualThreshold     float64
@@ -194,6 +195,7 @@ func (c *Camera) UpdateInspectorConfig(cfg *InspectorConfig) error {
 		on_threshold:            C.uint8_t(cfg.OnThreshold),
 		off_threshold:           C.uint8_t(cfg.OffThreshold),
 		bpf_floor:               C.double(cfg.BPFFloor),
+		min_bytes_threshold:     C.uint32_t(cfg.MinBytesThreshold),
 		configured_periodic_kf:  C.bool(cfg.ConfiguredPeriodicKF),
 		gradual_enabled:         C.bool(cfg.GradualEnabled),
 		gradual_threshold:       C.double(cfg.GradualThreshold),
@@ -227,6 +229,7 @@ func (c *Camera) GetInspectorConfig() (*InspectorConfig, error) {
 		OnThreshold:          uint8(cCfg.on_threshold),
 		OffThreshold:         uint8(cCfg.off_threshold),
 		BPFFloor:             float64(cCfg.bpf_floor),
+		MinBytesThreshold:    uint32(cCfg.min_bytes_threshold),
 		ConfiguredPeriodicKF: bool(cCfg.configured_periodic_kf),
 		GradualEnabled:       bool(cCfg.gradual_enabled),
 		GradualThreshold:     float64(cCfg.gradual_threshold),

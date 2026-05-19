@@ -230,6 +230,19 @@ static void push_nal_to_ring(cam_nal_ctx_t *ctx,
                 strncpy(ev.reason, result.reason, sizeof(ev.reason) - 1);
                 strncpy(ev.cam_name, ctx->cfg->name, sizeof(ev.cam_name) - 1);
 
+                /* Inspector signal snapshot for autotune / eventlog */
+                ev.z_score     = result.z_score;
+                ev.intra_ratio = result.intra_ratio;
+                ev.byte_count  = (uint64_t)ctx->au_bytes;
+                ev.bpf_slow    = ctx->insp_state.bpf_slow;
+                ev.bpf_ewma    = ctx->insp_state.bpf_ewma;
+                ev.bpf_var     = ctx->insp_state.bpf_var;
+                ev.since_kf    = ctx->insp_state.since_kf;
+                ev.fsm_before  = result.fsm_before;
+                ev.fsm_after   = result.fsm_after;
+                /* target_class_mask: Phase B — set from camera config when available */
+                ev.target_class_mask = 0;
+
                 uint64_t pre_ticks  = (uint64_t)ctx->cfg->pre_roll_seconds  * 90000u;
                 uint64_t post_ticks = (uint64_t)ctx->cfg->post_roll_seconds * 90000u;
                 ev.pre_roll_pts  = (ctx->au_pts > pre_ticks) ? ctx->au_pts - pre_ticks : 0;
@@ -390,11 +403,12 @@ emd_cam_t *emd_cam_open(const emd_camera_cfg_t *cfg,
 
     /* Inspector config */
     emd_inspector_default_cfg(&cam->nal_ctx.insp_cfg);
-    cam->nal_ctx.insp_cfg.motion_z_high    = cfg->motion_z_high > 0.0 ? cfg->motion_z_high : 3.0;
-    cam->nal_ctx.insp_cfg.intra_ratio_high = cfg->intra_ratio_high > 0.0 ? cfg->intra_ratio_high : 2.5;
-    cam->nal_ctx.insp_cfg.gradual_enabled  = cfg->gradual_enabled;
-    cam->nal_ctx.insp_cfg.on_threshold     = cfg->on_threshold > 0 ? cfg->on_threshold : 2;
-    cam->nal_ctx.insp_cfg.off_threshold    = cfg->off_threshold > 0 ? cfg->off_threshold : 45;
+    cam->nal_ctx.insp_cfg.motion_z_high       = cfg->motion_z_high > 0.0 ? cfg->motion_z_high : 3.0;
+    cam->nal_ctx.insp_cfg.intra_ratio_high    = cfg->intra_ratio_high > 0.0 ? cfg->intra_ratio_high : 2.5;
+    cam->nal_ctx.insp_cfg.gradual_enabled     = cfg->gradual_enabled;
+    cam->nal_ctx.insp_cfg.on_threshold        = cfg->on_threshold > 0 ? cfg->on_threshold : 2;
+    cam->nal_ctx.insp_cfg.off_threshold       = cfg->off_threshold > 0 ? cfg->off_threshold : 45;
+    cam->nal_ctx.insp_cfg.min_bytes_threshold = cfg->min_bytes_threshold;
     emd_inspector_init(&cam->nal_ctx.insp_state, &cam->nal_ctx.insp_cfg);
 
     /* Initialize config mutex */
