@@ -12,15 +12,9 @@ import (
 	"github.com/nats-io/nats.go"
 )
 
-// ZPoint is one entry in the per-frame z-score timeline attached to each clip.
-type ZPoint struct {
-	OffsetMS uint32  `json:"offset_ms"` // milliseconds from clip start
-	ZScore   float32 `json:"z_score"`
-}
-
 // Event is the raw motion event published by the edge agent.
 // It mirrors the autotune schema (components/autotune/pkg/nats/schema.go)
-// with the addition of TriggerOffsetMS and ZTimeline.
+// with the addition of TriggerOffsetMS and ZTimelineURL.
 type Event struct {
 	EventID         string    `json:"event_id"`
 	Site            string    `json:"site"`
@@ -49,9 +43,10 @@ type Event struct {
 	TriggerOffsetMS uint32    `json:"trigger_offset_ms"` // ms offset into clip where motion triggered
 	TargetClassMask uint8     `json:"target_class_mask"`
 	AgentVersion    string    `json:"agent_version"`
-	// ZTimeline is the per-frame z-score timeline for the clip (one entry per AU).
-	// Empty when z-score extraction is disabled or the clip had no frames.
-	ZTimeline       []ZPoint  `json:"z_timeline,omitempty"`
+	// ZTimelineURL links to the per-frame z-score timeline JSON for this clip.
+	// GET this URL to receive an array of {offset_ms, z_score} objects.
+	// Empty if public_url is not configured.
+	ZTimelineURL    string    `json:"z_timeline_url,omitempty"`
 }
 
 // Publisher wraps a NATS connection and JetStream context for event publishing.

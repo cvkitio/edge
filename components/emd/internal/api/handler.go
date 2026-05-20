@@ -758,6 +758,8 @@ func (h *Handler) handleClipFile(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "video/mp4")
 	case ".mkv":
 		w.Header().Set("Content-Type", "video/x-matroska")
+	case ".json":
+		w.Header().Set("Content-Type", "application/json")
 	default:
 		w.Header().Set("Content-Type", "application/octet-stream")
 	}

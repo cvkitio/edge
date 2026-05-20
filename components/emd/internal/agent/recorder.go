@@ -31,12 +31,12 @@ type ClipMeta struct {
 	Reason          string             `json:"reason"`
 	PreRollSeconds  uint32             `json:"pre_roll_seconds"`
 	PostRollSeconds uint32             `json:"post_roll_seconds"`
-	TriggerOffsetMS uint32             `json:"trigger_offset_ms"` // = pre_roll_seconds * 1000
-	ClipDurationMS  uint64             `json:"clip_duration_ms"`
-	ClipURL         string             `json:"clip_url,omitempty"`
-	Codec           string             `json:"codec"`
-	FPS             float64            `json:"fps"`
-	ZTimeline       []libemd.ZPoint    `json:"z_timeline,omitempty"`
+	TriggerOffsetMS uint32  `json:"trigger_offset_ms"` // = pre_roll_seconds * 1000
+	ClipDurationMS  uint64  `json:"clip_duration_ms"`
+	ClipURL         string  `json:"clip_url,omitempty"`
+	ZTimelineURL    string  `json:"z_timeline_url,omitempty"`
+	Codec           string  `json:"codec"`
+	FPS             float64 `json:"fps"`
 }
 
 // clipMetaPath returns the sidecar path for a clip file.
@@ -243,14 +243,24 @@ func (r *RecorderWorker) recordClip(evt libemd.Event) {
 		codecStr = "h265"
 	}
 
-	// Build clip URL (empty if public_url not configured).
+	// Build clip and timeline URLs (empty if public_url not configured).
+	base := filepath.Base(destPath)
+	ext := filepath.Ext(base)
+	baseNoExt := base[:len(base)-len(ext)]
 	clipURL := ""
+	zTimelineURL := ""
 	if r.cfg.Runtime.PublicURL != "" {
-		// Path: /api/clips/<camera>/<filename> (strip container extension for m3u8 HLS)
-		base := filepath.Base(destPath)
-		ext := filepath.Ext(base)
-		baseNoExt := base[:len(base)-len(ext)]
 		clipURL = r.cfg.Runtime.PublicURL + "/api/clips/" + evt.CamName + "/" + baseNoExt + ".m3u8"
+		zTimelineURL = r.cfg.Runtime.PublicURL + "/api/clips/" + evt.CamName + "/" + baseNoExt + ".z.json"
+	}
+
+	// Write z-score timeline as a separate .z.json file so consumers can
+	// fetch it on demand without bloating the NATS event payload.
+	zJSONPath := filepath.Join(filepath.Dir(destPath), baseNoExt+".z.json")
+	if len(zTimeline) > 0 {
+		if zb, err := json.Marshal(zTimeline); err == nil {
+			_ = os.WriteFile(zJSONPath, zb, 0640)
+		}
 	}
 
 	// Write clip metadata sidecar.
@@ -271,9 +281,9 @@ func (r *RecorderWorker) recordClip(evt libemd.Event) {
 		TriggerOffsetMS: preRollSec * 1000,
 		ClipDurationMS:  hdr.DurationMS,
 		ClipURL:         clipURL,
+		ZTimelineURL:    zTimelineURL,
 		Codec:           codecStr,
 		FPS:             evt.FPS,
-		ZTimeline:       zTimeline,
 	}
 	if mb, err := json.Marshal(meta); err == nil {
 		_ = os.WriteFile(clipMetaPath(destPath), mb, 0640)
@@ -281,12 +291,6 @@ func (r *RecorderWorker) recordClip(evt libemd.Event) {
 
 	// Publish to NATS JetStream (non-blocking on failure).
 	if r.publisher != nil {
-		// Convert []libemd.ZPoint to []natspub.ZPoint
-		natsZTimeline := make([]natspub.ZPoint, len(zTimeline))
-		for i, p := range zTimeline {
-			natsZTimeline[i] = natspub.ZPoint{OffsetMS: p.OffsetMS, ZScore: p.ZScore}
-		}
-
 		natsEvt := natspub.Event{
 			EventID:         evt.ID,
 			Site:            r.cfg.Agent.InstanceID,
@@ -311,15 +315,15 @@ func (r *RecorderWorker) recordClip(evt libemd.Event) {
 			FPS:             evt.FPS,
 			ClipID:          evt.ID,
 			ClipURL:         clipURL,
+			ZTimelineURL:    zTimelineURL,
 			TriggerOffsetMS: meta.TriggerOffsetMS,
 			TargetClassMask: evt.TargetClassMask,
 			AgentVersion:    Version,
-			ZTimeline:       natsZTimeline,
 		}
 		if err := r.publisher.Publish(natsEvt); err != nil {
 			log.Printf("NATS: publish failed for %s event %s: %v", evt.CamName, evt.ID, err)
 		} else {
-			log.Printf("NATS: published event %s for %s (clip_url=%s)", evt.ID[:8], evt.CamName, clipURL)
+			log.Printf("NATS: published event %s for %s z_timeline_url=%s", evt.ID[:8], evt.CamName, zTimelineURL)
 		}
 	}
 
