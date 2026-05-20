@@ -636,7 +636,8 @@ int emd_cam_record(emd_cam_t *cam,
         }
     }
 
-    /* Write all NALs from the snapshot */
+    /* Write all NALs from the snapshot, tracking actual last PTS written */
+    uint64_t last_pts = first_pts;
     for (uint32_t i = 0; i < snap.count; i++) {
         const emd_nal_record_t *nal = &snap.records[i];
         const uint8_t *data = emd_ringbuf_snap_data(&snap, i);
@@ -651,6 +652,7 @@ int emd_cam_record(emd_cam_t *cam,
             if (errbuf) snprintf(errbuf, errbuf_len, "mux write failed");
             return -2;
         }
+        last_pts = nal->pts_90khz;
     }
 
     if (mux->close(mux_ctx) < 0) {
@@ -659,7 +661,7 @@ int emd_cam_record(emd_cam_t *cam,
         return -2;
     }
 
-    /* Fill header */
+    /* Fill header — duration from actual PTS span written, not requested range */
     memset(hdr_out, 0, sizeof(*hdr_out));
     strncpy(hdr_out->cam_id_str, cam->cfg.name, sizeof(hdr_out->cam_id_str) - 1);
     strncpy(hdr_out->container, req->container ? req->container : "mpegts",
@@ -667,7 +669,7 @@ int emd_cam_record(emd_cam_t *cam,
     strncpy(hdr_out->codec, cam->nal_ctx.codec == 1 ? "h264" : "h265",
             sizeof(hdr_out->codec) - 1);
     strncpy(hdr_out->path, req->out_path, sizeof(hdr_out->path) - 1);
-    hdr_out->duration_ms = (to_pts_90khz - from_pts_90khz) / 90;
+    hdr_out->duration_ms = (last_pts > first_pts) ? (last_pts - first_pts) / 90 : 0;
 
     emd_ringbuf_snapshot_release(&snap);
     return 0;
