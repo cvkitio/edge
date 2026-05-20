@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"encoding/json"
 	"fmt"
 	"log"
 	"os"
@@ -10,7 +11,36 @@ import (
 
 	"github.com/cvkitio/cvkit/edge/emd-agent/internal/eventlog"
 	"github.com/cvkitio/cvkit/edge/emd-agent/internal/libemd"
+	natspub "github.com/cvkitio/cvkit/edge/emd-agent/internal/nats"
 )
+
+// ClipMeta is written as a JSON sidecar alongside each recorded clip.
+// It captures the trigger statistics and timing so the UI can show where
+// the motion spike occurs in the clip timeline.
+type ClipMeta struct {
+	EventID         string    `json:"event_id"`
+	Camera          string    `json:"camera"`
+	Site            string    `json:"site"`
+	TS              time.Time `json:"ts"`
+	ZScore          float64   `json:"z_score"`
+	BPFSlow         float64   `json:"bpf_slow"`
+	BPFEwma         float64   `json:"bpf_ewma"`
+	BPFVar          float64   `json:"bpf_var"`
+	IntraRatio      float64   `json:"intra_ratio"`
+	Bytes           uint64    `json:"bytes"`
+	Reason          string    `json:"reason"`
+	PreRollSeconds  uint32    `json:"pre_roll_seconds"`
+	PostRollSeconds uint32    `json:"post_roll_seconds"`
+	TriggerOffsetMS uint32    `json:"trigger_offset_ms"` // = pre_roll_seconds * 1000
+	ClipDurationMS  uint64    `json:"clip_duration_ms"`
+	Codec           string    `json:"codec"`
+	FPS             float64   `json:"fps"`
+}
+
+// clipMetaPath returns the sidecar path for a clip file.
+func clipMetaPath(clipFilePath string) string {
+	return clipFilePath + ".meta.json"
+}
 
 // RecorderWorker handles clip recording for motion events.
 type RecorderWorker struct {
@@ -19,17 +49,19 @@ type RecorderWorker struct {
 	camerasMux sync.RWMutex
 	eventCh    <-chan libemd.Event
 	eventLog   *eventlog.Writer
-	ctx        chan struct{} // for shutdown
+	publisher  *natspub.Publisher // nil = NATS disabled
+	ctx        chan struct{}       // for shutdown
 }
 
 // NewRecorderWorker creates a new recorder worker.
-func NewRecorderWorker(cfg *Config, eventCh <-chan libemd.Event, evLog *eventlog.Writer) *RecorderWorker {
+func NewRecorderWorker(cfg *Config, eventCh <-chan libemd.Event, evLog *eventlog.Writer, pub *natspub.Publisher) *RecorderWorker {
 	return &RecorderWorker{
-		cfg:      cfg,
-		cameras:  make(map[string]*libemd.Camera),
-		eventCh:  eventCh,
-		eventLog: evLog,
-		ctx:      make(chan struct{}),
+		cfg:       cfg,
+		cameras:   make(map[string]*libemd.Camera),
+		eventCh:   eventCh,
+		eventLog:  evLog,
+		publisher: pub,
+		ctx:       make(chan struct{}),
 	}
 }
 
@@ -119,6 +151,14 @@ func toLogEvent(evt libemd.Event, instanceID string) eventlog.Event {
 
 // recordClip records a clip for the given event.
 func (r *RecorderWorker) recordClip(evt libemd.Event) {
+	// Wait for post-roll data to accumulate in the ring buffer before recording.
+	// The C library sets PostRollPTS = event_pts + post_roll_seconds*90kHz at the
+	// moment the event fires, so without this sleep the ring buffer won't yet contain
+	// the post-roll frames and the clip would be truncated to just pre-roll + event.
+	if camCfg, ok := r.cfg.Cameras[evt.CamName]; ok && camCfg.PostRollSeconds > 0 {
+		time.Sleep(time.Duration(camCfg.PostRollSeconds) * time.Second)
+	}
+
 	r.camerasMux.RLock()
 	cam, ok := r.cameras[evt.CamName]
 	r.camerasMux.RUnlock()
@@ -184,7 +224,78 @@ func (r *RecorderWorker) recordClip(evt libemd.Event) {
 		parseZScore(evt.Reason),
 		duration.Seconds())
 
-	// TODO: Publish clip metadata to NATS/MQTT
+	// Resolve pre/post roll from per-camera config.
+	codecStr := "h264"
+	if evt.Codec == 2 {
+		codecStr = "h265"
+	}
+	preRollSec := uint32(0)
+	postRollSec := uint32(0)
+	if camCfg, ok := r.cfg.Cameras[evt.CamName]; ok {
+		preRollSec = camCfg.PreRollSeconds
+		postRollSec = camCfg.PostRollSeconds
+	}
+
+	// Write clip metadata sidecar.
+	meta := ClipMeta{
+		EventID:         evt.ID,
+		Camera:          evt.CamName,
+		Site:            r.cfg.Agent.InstanceID,
+		TS:              evt.StartedTime,
+		ZScore:          evt.ZScore,
+		BPFSlow:         evt.BPFSlow,
+		BPFEwma:         evt.BPFEwma,
+		BPFVar:          evt.BPFVar,
+		IntraRatio:      evt.IntraRatio,
+		Bytes:           evt.Bytes,
+		Reason:          evt.Reason,
+		PreRollSeconds:  preRollSec,
+		PostRollSeconds: postRollSec,
+		TriggerOffsetMS: preRollSec * 1000,
+		ClipDurationMS:  hdr.DurationMS,
+		Codec:           codecStr,
+		FPS:             evt.FPS,
+	}
+	if mb, err := json.Marshal(meta); err == nil {
+		_ = os.WriteFile(clipMetaPath(destPath), mb, 0640)
+	}
+
+	// Publish to NATS JetStream (non-blocking on failure).
+	if r.publisher != nil {
+		natsEvt := natspub.Event{
+			EventID:         evt.ID,
+			Site:            r.cfg.Agent.InstanceID,
+			Camera:          evt.CamName,
+			CamID:           evt.CamID,
+			Ts:              evt.StartedTime,
+			TsMonoNS:        evt.StartedMonoNS,
+			Type:            evt.Type.String(),
+			ZScore:          evt.ZScore,
+			IntraRatio:      evt.IntraRatio,
+			Bytes:           evt.Bytes,
+			BPFSlow:         evt.BPFSlow,
+			BPFEwma:         evt.BPFEwma,
+			BPFVar:          evt.BPFVar,
+			SinceKF:         evt.SinceKF,
+			Reason:          evt.Reason,
+			FSMBefore:       evt.FSMBefore,
+			FSMAfter:        evt.FSMAfter,
+			PTSStart:        evt.PreRollPTS,
+			PTSEnd:          evt.PostRollPTS,
+			Codec:           meta.Codec,
+			FPS:             evt.FPS,
+			ClipID:          evt.ID,
+			TriggerOffsetMS: meta.TriggerOffsetMS,
+			TargetClassMask: evt.TargetClassMask,
+			AgentVersion:    Version,
+		}
+		if err := r.publisher.Publish(natsEvt); err != nil {
+			log.Printf("NATS: publish failed for %s event %s: %v", evt.CamName, evt.ID, err)
+		} else {
+			log.Printf("NATS: published event %s for %s", evt.ID[:8], evt.CamName)
+		}
+	}
+
 	// TODO: Queue for S3 upload
 }
 

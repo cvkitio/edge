@@ -9,6 +9,7 @@ import (
 	"github.com/cvkitio/cvkit/edge/emd-agent/internal/eventlog"
 	"github.com/cvkitio/cvkit/edge/emd-agent/internal/libemd"
 	"github.com/cvkitio/cvkit/edge/emd-agent/internal/metrics"
+	natspub "github.com/cvkitio/cvkit/edge/emd-agent/internal/nats"
 )
 
 // Supervisor manages camera workers and the recorder.
@@ -17,6 +18,7 @@ type Supervisor struct {
 	recorder    *RecorderWorker
 	diskMgr     *DiskManager
 	eventLog    *eventlog.Writer
+	publisher   *natspub.Publisher
 	eventCh     chan libemd.Event
 	statsCh     chan libemd.StatsSample
 	stopCh      chan struct{}
@@ -49,8 +51,17 @@ func NewSupervisor(cfg *Config, m *metrics.Metrics) *Supervisor {
 		log.Printf("warning: could not open event log: %v", err)
 	}
 
+	// Connect to NATS if configured (optional — nil if URL is empty).
+	pub, err := natspub.New(cfg.NATS.URL)
+	if err != nil {
+		log.Printf("warning: NATS connect failed: %v (publishing disabled)", err)
+		pub = nil
+	} else if pub != nil {
+		log.Printf("NATS: connected to %s", cfg.NATS.URL)
+	}
+
 	// Create recorder worker — it is the single consumer of eventCh.
-	recorder := NewRecorderWorker(cfg, eventCh, evLog)
+	recorder := NewRecorderWorker(cfg, eventCh, evLog, pub)
 
 	// Get camera names for disk manager.
 	cameraNames := make([]string, 0, len(cfg.Cameras))
@@ -66,6 +77,7 @@ func NewSupervisor(cfg *Config, m *metrics.Metrics) *Supervisor {
 		recorder:    recorder,
 		diskMgr:     diskMgr,
 		eventLog:    evLog,
+		publisher:   pub,
 		eventCh:     eventCh,
 		statsCh:     statsCh,
 		stopCh:      make(chan struct{}),
@@ -138,6 +150,10 @@ func (s *Supervisor) Start(ctx context.Context) error {
 
 	s.recorder.Stop()
 	s.diskMgr.Stop()
+
+	if s.publisher != nil {
+		s.publisher.Close()
+	}
 
 	if s.eventLog != nil {
 		if err := s.eventLog.Close(); err != nil {

@@ -31,8 +31,8 @@ func Run(ctx context.Context, configPath string) error {
 	eventCh := make(chan libemd.Event, 1000)  // Buffer for all cameras
 	statsCh := make(chan libemd.StatsSample, 100)
 
-	// Create recorder worker (no eventlog in the legacy Run path).
-	recorder := NewRecorderWorker(cfg, eventCh, nil)
+	// Create recorder worker (no eventlog or NATS in the legacy Run path).
+	recorder := NewRecorderWorker(cfg, eventCh, nil, nil)
 	recorder.Start()
 	defer recorder.Stop()
 

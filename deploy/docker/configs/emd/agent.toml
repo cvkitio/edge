@@ -1,0 +1,37 @@
+[agent]
+instance_id = "local-dev"
+data_dir    = "/var/lib/emd-agent"
+sd_notify   = false
+
+[nats]
+# Set EMD_NATS_URL env var to override, or set url here.
+# Leave empty to disable NATS publishing.
+url = ""  # populated by EMD_NATS_URL env var in docker-compose
+
+[runtime]
+log_level     = "info"
+clip_root     = "/var/lib/emd-agent/clips"
+inflight_root = "/var/lib/emd-agent/inflight"
+
+[recording]
+container    = "mpegts"
+fsync_policy = "on_close"
+
+[disk]
+max_bytes_per_camera = 10737418240  # 10 GB
+retention_days       = 7
+
+# Add real cameras here. Example (RTSP with H.264):
+# [cameras.front_door]
+# url               = "rtsp://user:pass@192.168.1.100:554/stream1"
+# transport         = "tcp"
+# codec_hint        = "h264"
+# buffer_seconds    = 30
+# pre_roll_seconds  = 10
+# post_roll_seconds = 10
+# clip_max_seconds  = 60
+# max_bitrate_bps   = 8000000
+# motion_z_high     = 8.0
+# intra_ratio_high  = 0.5
+# on_threshold      = 2
+# off_threshold     = 3
