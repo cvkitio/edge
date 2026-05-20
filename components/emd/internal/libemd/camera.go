@@ -112,17 +112,17 @@ func (c *Camera) Close() {
 }
 
 // Record writes a clip from the camera's ring buffer.
-// Returns the clip metadata on success.
-func (c *Camera) Record(fromPTS, toPTS uint64, req *ClipRequest) (*ClipHeader, error) {
+// Returns the clip metadata and z-score timeline on success.
+// The z-score timeline is populated only when req.ZBufSize > 0.
+func (c *Camera) Record(fromPTS, toPTS uint64, req *ClipRequest) (*ClipHeader, []ZPoint, error) {
 	if c.handle == nil {
-		return nil, fmt.Errorf("camera is closed")
+		return nil, nil, fmt.Errorf("camera is closed")
 	}
 
 	cReq := req.toCRequest()
 	if cReq == nil {
-		return nil, fmt.Errorf("failed to allocate C request")
+		return nil, nil, fmt.Errorf("failed to allocate C request")
 	}
-	defer freeClipRequest(cReq)
 
 	var cHdr C.emd_clip_header_t
 	var errbuf [256]C.char
@@ -134,13 +134,18 @@ func (c *Camera) Record(fromPTS, toPTS uint64, req *ClipRequest) (*ClipHeader, e
 	switch ret {
 	case 0:
 		hdr := fromCClipHeader(&cHdr)
-		return &hdr, nil
+		zpts := extractZPoints(cReq)
+		freeClipRequest(cReq)
+		return &hdr, zpts, nil
 	case -1:
-		return nil, fmt.Errorf("no data in range: %s", C.GoString(&errbuf[0]))
+		freeClipRequest(cReq)
+		return nil, nil, fmt.Errorf("no data in range: %s", C.GoString(&errbuf[0]))
 	case -2:
-		return nil, errorString("muxer error", &errbuf[0])
+		freeClipRequest(cReq)
+		return nil, nil, errorString("muxer error", &errbuf[0])
 	default:
-		return nil, fmt.Errorf("emd_cam_record returned %d", ret)
+		freeClipRequest(cReq)
+		return nil, nil, fmt.Errorf("emd_cam_record returned %d", ret)
 	}
 }
 

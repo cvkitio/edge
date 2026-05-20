@@ -170,15 +170,25 @@ type ClipHeader struct {
 	SHA256      string
 }
 
+// ZPoint is one entry in a per-frame z-score timeline.
+// OffsetMS is milliseconds from the clip start; ZScore is the inspector value.
+type ZPoint struct {
+	OffsetMS uint32
+	ZScore   float32
+}
+
 // ClipRequest represents a clip recording request.
 type ClipRequest struct {
 	OutPath     string
 	Container   string // "mpegts" or "fmp4"
 	FsyncPolicy uint8  // 0=on_close, 1=always, 2=never
+	// ZBufSize is the number of z-score timeline slots to allocate.
+	// Pass 0 to skip timeline extraction. Typical: pre+post roll frames (e.g. 300).
+	ZBufSize int
 }
 
 func (req *ClipRequest) toCRequest() *C.emd_clip_request_t {
-	c := (*C.emd_clip_request_t)(C.malloc(C.sizeof_emd_clip_request_t))
+	c := (*C.emd_clip_request_t)(C.calloc(1, C.sizeof_emd_clip_request_t))
 	if c == nil {
 		return nil
 	}
@@ -187,7 +197,36 @@ func (req *ClipRequest) toCRequest() *C.emd_clip_request_t {
 	c.container = C.CString(req.Container)
 	c.fsync_policy = C.emd_fsync_policy_t(req.FsyncPolicy)
 
+	if req.ZBufSize > 0 {
+		c.z_buf = (*C.emd_z_point_t)(C.calloc(C.size_t(req.ZBufSize), C.sizeof_emd_z_point_t))
+		c.z_buf_count = C.uint32_t(req.ZBufSize)
+		// z_out_count: allocate a single uint32_t that C will write into
+		c.z_out_count = (*C.uint32_t)(C.calloc(1, C.size_t(unsafe.Sizeof(C.uint32_t(0)))))
+	}
+
 	return c
+}
+
+// extractZPoints reads the z-score timeline from a completed clip request.
+// Must be called before freeClipRequest.
+func extractZPoints(c *C.emd_clip_request_t) []ZPoint {
+	if c.z_buf == nil || c.z_out_count == nil {
+		return nil
+	}
+	n := int(*c.z_out_count)
+	if n <= 0 {
+		return nil
+	}
+	pts := make([]ZPoint, n)
+	base := uintptr(unsafe.Pointer(c.z_buf))
+	for i := 0; i < n; i++ {
+		p := (*C.emd_z_point_t)(unsafe.Pointer(base + uintptr(i)*C.sizeof_emd_z_point_t))
+		pts[i] = ZPoint{
+			OffsetMS: uint32(p.offset_ms),
+			ZScore:   float32(p.z_score),
+		}
+	}
+	return pts
 }
 
 func freeClipRequest(c *C.emd_clip_request_t) {
@@ -196,6 +235,12 @@ func freeClipRequest(c *C.emd_clip_request_t) {
 	}
 	C.free(unsafe.Pointer(c.out_path))
 	C.free(unsafe.Pointer(c.container))
+	if c.z_buf != nil {
+		C.free(unsafe.Pointer(c.z_buf))
+	}
+	if c.z_out_count != nil {
+		C.free(unsafe.Pointer(c.z_out_count))
+	}
 	C.free(unsafe.Pointer(c))
 }
 

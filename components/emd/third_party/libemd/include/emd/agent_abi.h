@@ -197,11 +197,20 @@ void emd_cam_set_stats_cb(emd_cam_t *cam,
  * Clip recording request.
  *
  * Used by emd_cam_record() to specify where and how to write the clip.
+ *
+ * z_buf / z_buf_count / z_out_count are optional: set z_buf=NULL to skip
+ * timeline extraction. When provided, one emd_z_point_t is written per
+ * unique access unit PTS in the snapshot (deduplicated by PTS), up to
+ * z_buf_count entries. *z_out_count is set to the actual count written.
  */
 typedef struct {
     const char         *out_path;     /* path to .part file in inflight dir */
     const char         *container;    /* "mpegts" or "fmp4" */
     emd_fsync_policy_t  fsync_policy; /* EMD_FSYNC_ON_CLOSE, etc. */
+    /* Optional z-score timeline output (NULL = skip) */
+    emd_z_point_t      *z_buf;        /* caller-allocated; NULL to skip */
+    uint32_t            z_buf_count;  /* capacity of z_buf */
+    uint32_t           *z_out_count;  /* set to actual count written (may be NULL) */
 } emd_clip_request_t;
 
 /*

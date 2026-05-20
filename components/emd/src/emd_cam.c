@@ -111,6 +111,11 @@ typedef struct {
     size_t                  au_bytes;
     bool                    au_has_kf;
     bool                    au_has_intra;
+
+    /* Z-score from the most recently completed access unit.
+     * Stamped onto each incoming NAL so the ring buffer carries
+     * per-frame signal data for clip timeline extraction. */
+    float                   pending_z_score;
 } cam_nal_ctx_t;
 
 /* ---------------------------------------------------------------------------
@@ -190,6 +195,7 @@ static void push_nal_to_ring(cam_nal_ctx_t *ctx,
     rec.flags     = flags;
     rec.cam_id    = ctx->cfg->cam_id;
     rec.length    = (uint32_t)nal_len;
+    rec.z_score   = ctx->pending_z_score; /* z-score from previous AU */
 
     struct timespec ts;
     clock_gettime(CLOCK_MONOTONIC, &ts);
@@ -212,7 +218,14 @@ static void push_nal_to_ring(cam_nal_ctx_t *ctx,
             in.byte_count        = ctx->au_bytes;
             in.is_keyframe       = ctx->au_has_kf;
             in.is_intra          = ctx->au_has_intra;
-            in.intra_ratio_proxy = ctx->au_has_intra ? 2.0 : 0.5;
+            /* intra_ratio_proxy: ratio of this AU's bytes to the slow EWMA.
+             * Values > 1.0 indicate an access unit larger than the background
+             * baseline (intra-heavy or keyframe). Guard against div/0. */
+            {
+                double denom = ctx->insp_state.bpf_slow > 0.0
+                               ? ctx->insp_state.bpf_slow : 100.0;
+                in.intra_ratio_proxy = (double)ctx->au_bytes / denom;
+            }
 
             emd_inspector_result_t result;
             bool fired = emd_inspector_process(&ctx->insp_state,
@@ -253,6 +266,10 @@ static void push_nal_to_ring(cam_nal_ctx_t *ctx,
                     ctx->event_cb(ctx->event_ctx, &ev);
                 }
             }
+
+            /* Always update pending_z_score so ring buffer NALs carry
+             * per-AU signal data for clip timeline extraction. */
+            ctx->pending_z_score = (float)result.z_score;
 
             /* Stats sampling */
             ctx->stats_frame_count++;
@@ -670,6 +687,24 @@ int emd_cam_record(emd_cam_t *cam,
             sizeof(hdr_out->codec) - 1);
     strncpy(hdr_out->path, req->out_path, sizeof(hdr_out->path) - 1);
     hdr_out->duration_ms = (last_pts > first_pts) ? (last_pts - first_pts) / 90 : 0;
+
+    /* Extract per-AU z-score timeline if the caller provided a buffer.
+     * One entry per unique PTS (deduplicated), up to z_buf_count entries. */
+    if (req->z_buf && req->z_buf_count > 0) {
+        uint32_t zn = 0;
+        uint64_t last_z_pts = UINT64_MAX;
+        for (uint32_t i = 0; i < snap.count && zn < req->z_buf_count; i++) {
+            const emd_nal_record_t *nal = &snap.records[i];
+            if (nal->pts_90khz == last_z_pts) continue; /* skip duplicate PTS NALs */
+            req->z_buf[zn].offset_ms = (uint32_t)((nal->pts_90khz - first_pts) / 90u);
+            req->z_buf[zn].z_score   = nal->z_score;
+            last_z_pts = nal->pts_90khz;
+            zn++;
+        }
+        if (req->z_out_count) *req->z_out_count = zn;
+    } else if (req->z_out_count) {
+        *req->z_out_count = 0;
+    }
 
     emd_ringbuf_snapshot_release(&snap);
     return 0;

@@ -124,6 +124,11 @@ typedef struct {
     size_t                  au_bytes;
     bool                    au_has_kf;
     bool                    au_has_intra;
+
+    /* Z-score from the most recently completed access unit.
+     * Stored onto each incoming NAL so the ring buffer carries
+     * per-frame signal data for clip timeline extraction. */
+    float                   pending_z_score;
 } cam_nal_ctx_t;
 
 static void push_nal_to_ring(cam_nal_ctx_t *ctx,
@@ -139,6 +144,7 @@ static void push_nal_to_ring(cam_nal_ctx_t *ctx,
     rec.flags     = flags;
     rec.cam_id    = ctx->cfg->cam_id;
     rec.length    = (uint32_t)nal_len;
+    rec.z_score   = ctx->pending_z_score; /* z-score from the previous AU */
 
     struct timespec ts;
     clock_gettime(CLOCK_MONOTONIC, &ts);
@@ -156,12 +162,18 @@ static void push_nal_to_ring(cam_nal_ctx_t *ctx,
         if (ctx->au_bytes > 0) {
             emd_inspector_input_t in;
             memset(&in, 0, sizeof(in));
-            in.pts_90khz         = ctx->au_pts;
-            in.mono_ns           = rec.mono_ns;
-            in.byte_count        = ctx->au_bytes;
-            in.is_keyframe       = ctx->au_has_kf;
-            in.is_intra          = ctx->au_has_intra;
-            in.intra_ratio_proxy = ctx->au_has_intra ? 2.0 : 0.5;
+            in.pts_90khz  = ctx->au_pts;
+            in.mono_ns    = rec.mono_ns;
+            in.byte_count = ctx->au_bytes;
+            in.is_keyframe = ctx->au_has_kf;
+            in.is_intra    = ctx->au_has_intra;
+            /* intra_ratio_proxy: ratio of this AU's bytes to the slow EWMA.
+             * Values > 1.0 indicate an access unit larger than the background
+             * baseline (intra-heavy or keyframe). We guard against div/0 with
+             * the bpf_floor already held in the inspector state. */
+            double denom = ctx->insp_state.bpf_slow > 0.0
+                           ? ctx->insp_state.bpf_slow : 100.0;
+            in.intra_ratio_proxy = (double)ctx->au_bytes / denom;
 
             emd_inspector_result_t result;
             bool fired = emd_inspector_process(&ctx->insp_state,
@@ -198,6 +210,9 @@ static void push_nal_to_ring(cam_nal_ctx_t *ctx,
 
                 emd_event_bus_push(ctx->bus, &ev);
             }
+            /* Always stamp the latest z-score so ring buffer NALs carry
+             * per-AU signal data for clip timeline extraction. */
+            ctx->pending_z_score = (float)result.z_score;
         }
 
         ctx->au_pts      = pts_90khz;

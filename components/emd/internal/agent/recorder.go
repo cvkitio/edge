@@ -18,23 +18,25 @@ import (
 // It captures the trigger statistics and timing so the UI can show where
 // the motion spike occurs in the clip timeline.
 type ClipMeta struct {
-	EventID         string    `json:"event_id"`
-	Camera          string    `json:"camera"`
-	Site            string    `json:"site"`
-	TS              time.Time `json:"ts"`
-	ZScore          float64   `json:"z_score"`
-	BPFSlow         float64   `json:"bpf_slow"`
-	BPFEwma         float64   `json:"bpf_ewma"`
-	BPFVar          float64   `json:"bpf_var"`
-	IntraRatio      float64   `json:"intra_ratio"`
-	Bytes           uint64    `json:"bytes"`
-	Reason          string    `json:"reason"`
-	PreRollSeconds  uint32    `json:"pre_roll_seconds"`
-	PostRollSeconds uint32    `json:"post_roll_seconds"`
-	TriggerOffsetMS uint32    `json:"trigger_offset_ms"` // = pre_roll_seconds * 1000
-	ClipDurationMS  uint64    `json:"clip_duration_ms"`
-	Codec           string    `json:"codec"`
-	FPS             float64   `json:"fps"`
+	EventID         string             `json:"event_id"`
+	Camera          string             `json:"camera"`
+	Site            string             `json:"site"`
+	TS              time.Time          `json:"ts"`
+	ZScore          float64            `json:"z_score"`
+	BPFSlow         float64            `json:"bpf_slow"`
+	BPFEwma         float64            `json:"bpf_ewma"`
+	BPFVar          float64            `json:"bpf_var"`
+	IntraRatio      float64            `json:"intra_ratio"`
+	Bytes           uint64             `json:"bytes"`
+	Reason          string             `json:"reason"`
+	PreRollSeconds  uint32             `json:"pre_roll_seconds"`
+	PostRollSeconds uint32             `json:"post_roll_seconds"`
+	TriggerOffsetMS uint32             `json:"trigger_offset_ms"` // = pre_roll_seconds * 1000
+	ClipDurationMS  uint64             `json:"clip_duration_ms"`
+	ClipURL         string             `json:"clip_url,omitempty"`
+	Codec           string             `json:"codec"`
+	FPS             float64            `json:"fps"`
+	ZTimeline       []libemd.ZPoint    `json:"z_timeline,omitempty"`
 }
 
 // clipMetaPath returns the sidecar path for a clip file.
@@ -198,16 +200,26 @@ func (r *RecorderWorker) recordClip(evt libemd.Event) {
 		fsyncPolicy = 2
 	}
 
+	// Estimate z-buf capacity: pre+post roll at 30fps + 20% headroom
+	preRollSec := uint32(0)
+	postRollSec := uint32(0)
+	if camCfg, ok := r.cfg.Cameras[evt.CamName]; ok {
+		preRollSec = camCfg.PreRollSeconds
+		postRollSec = camCfg.PostRollSeconds
+	}
+	zBufSize := int((preRollSec+postRollSec)*30) + 60
+
 	// Create clip request
 	clipReq := &libemd.ClipRequest{
 		Container:   r.cfg.Recording.Container,
 		OutPath:     destPath,
 		FsyncPolicy: fsyncPolicy,
+		ZBufSize:    zBufSize,
 	}
 
 	// Record clip
 	startTime := time.Now()
-	hdr, err := cam.Record(fromPTS, toPTS, clipReq)
+	hdr, zTimeline, err := cam.Record(fromPTS, toPTS, clipReq)
 	duration := time.Since(startTime)
 
 	if err != nil {
@@ -217,23 +229,28 @@ func (r *RecorderWorker) recordClip(evt libemd.Event) {
 	}
 
 	// Log successful recording
-	log.Printf("CLIP: created %s size=%dMB duration=%.1fs z=%.2f (recorded in %.1fs)",
+	log.Printf("CLIP: created %s size=%dMB duration=%.1fs z=%.2f (recorded in %.1fs, z_points=%d)",
 		filepath.Base(destPath),
 		hdr.SizeBytes/1024/1024,
 		float64(hdr.DurationMS)/1000.0,
 		parseZScore(evt.Reason),
-		duration.Seconds())
+		duration.Seconds(),
+		len(zTimeline))
 
 	// Resolve pre/post roll from per-camera config.
 	codecStr := "h264"
 	if evt.Codec == 2 {
 		codecStr = "h265"
 	}
-	preRollSec := uint32(0)
-	postRollSec := uint32(0)
-	if camCfg, ok := r.cfg.Cameras[evt.CamName]; ok {
-		preRollSec = camCfg.PreRollSeconds
-		postRollSec = camCfg.PostRollSeconds
+
+	// Build clip URL (empty if public_url not configured).
+	clipURL := ""
+	if r.cfg.Runtime.PublicURL != "" {
+		// Path: /api/clips/<camera>/<filename> (strip container extension for m3u8 HLS)
+		base := filepath.Base(destPath)
+		ext := filepath.Ext(base)
+		baseNoExt := base[:len(base)-len(ext)]
+		clipURL = r.cfg.Runtime.PublicURL + "/api/clips/" + evt.CamName + "/" + baseNoExt + ".m3u8"
 	}
 
 	// Write clip metadata sidecar.
@@ -253,8 +270,10 @@ func (r *RecorderWorker) recordClip(evt libemd.Event) {
 		PostRollSeconds: postRollSec,
 		TriggerOffsetMS: preRollSec * 1000,
 		ClipDurationMS:  hdr.DurationMS,
+		ClipURL:         clipURL,
 		Codec:           codecStr,
 		FPS:             evt.FPS,
+		ZTimeline:       zTimeline,
 	}
 	if mb, err := json.Marshal(meta); err == nil {
 		_ = os.WriteFile(clipMetaPath(destPath), mb, 0640)
@@ -262,6 +281,12 @@ func (r *RecorderWorker) recordClip(evt libemd.Event) {
 
 	// Publish to NATS JetStream (non-blocking on failure).
 	if r.publisher != nil {
+		// Convert []libemd.ZPoint to []natspub.ZPoint
+		natsZTimeline := make([]natspub.ZPoint, len(zTimeline))
+		for i, p := range zTimeline {
+			natsZTimeline[i] = natspub.ZPoint{OffsetMS: p.OffsetMS, ZScore: p.ZScore}
+		}
+
 		natsEvt := natspub.Event{
 			EventID:         evt.ID,
 			Site:            r.cfg.Agent.InstanceID,
@@ -285,14 +310,16 @@ func (r *RecorderWorker) recordClip(evt libemd.Event) {
 			Codec:           meta.Codec,
 			FPS:             evt.FPS,
 			ClipID:          evt.ID,
+			ClipURL:         clipURL,
 			TriggerOffsetMS: meta.TriggerOffsetMS,
 			TargetClassMask: evt.TargetClassMask,
 			AgentVersion:    Version,
+			ZTimeline:       natsZTimeline,
 		}
 		if err := r.publisher.Publish(natsEvt); err != nil {
 			log.Printf("NATS: publish failed for %s event %s: %v", evt.CamName, evt.ID, err)
 		} else {
-			log.Printf("NATS: published event %s for %s", evt.ID[:8], evt.CamName)
+			log.Printf("NATS: published event %s for %s (clip_url=%s)", evt.ID[:8], evt.CamName, clipURL)
 		}
 	}
 

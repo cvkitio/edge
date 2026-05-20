@@ -22,6 +22,7 @@ typedef struct {
     uint64_t mono_ns;     /* CLOCK_MONOTONIC at receipt */
     uint32_t offset;      /* byte offset into backing data ring */
     uint32_t length;      /* byte length */
+    float    z_score;     /* inspector z-score at this access unit (0 if not yet computed) */
     uint8_t  nal_type;    /* codec-specific NAL type byte */
     uint8_t  flags;       /* EMD_NAL_KEYFRAME | EMD_NAL_PARAMSET | EMD_NAL_LOST */
     uint16_t cam_id;

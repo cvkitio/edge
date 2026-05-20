@@ -36,6 +36,14 @@ extern const emd_mux_backend_t emd_mux_mpegts;
 extern const emd_mux_backend_t emd_mux_fmp4;
 
 /* -------------------------------------------------------------------------
+ * Z-score timeline point: one entry per access unit in the clip window.
+ * ---------------------------------------------------------------------- */
+typedef struct {
+    uint32_t offset_ms;  /* milliseconds from clip start (from_pts) */
+    float    z_score;    /* inspector z-score at this access unit   */
+} emd_z_point_t;
+
+/* -------------------------------------------------------------------------
  * Clip sidecar header (written as .json beside the clip)
  * ---------------------------------------------------------------------- */
 typedef struct {

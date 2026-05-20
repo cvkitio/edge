@@ -36,6 +36,10 @@ type RuntimeConfig struct {
 	ClipRoot      string `toml:"clip_root"`
 	InflightRoot  string `toml:"inflight_root"`
 	EventLogRoot  string `toml:"event_log_root"` // default: <clip_root>/../eventlog
+	// PublicURL is the base URL of this agent as reachable by downstream services.
+	// Used to build clip_url in NATS events, e.g. "https://emd-agent.au01-0.dametech.net".
+	// If empty, clip_url is omitted from NATS events.
+	PublicURL     string `toml:"public_url"`
 }
 
 type RecordingConfig struct {
