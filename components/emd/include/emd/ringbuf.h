@@ -15,6 +15,7 @@ extern "C" {
 #define EMD_NAL_KEYFRAME  0x01u
 #define EMD_NAL_PARAMSET  0x02u
 #define EMD_NAL_LOST      0x04u  /* synthetic loss record */
+#define EMD_NAL_BFRAME    0x08u  /* B-slice (parsed from slice_type in RBSP) */
 
 /* Record describing one NAL unit in the ring */
 typedef struct {

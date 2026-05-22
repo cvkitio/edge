@@ -1332,6 +1332,9 @@ const webUIHTML = `<!DOCTYPE html>
         .spike-stat-value.z-warn { color: #fbbf24; }
         .spike-stat-value.z-crit { color: #f87171; }
         .spike-reason { font-size: 0.78rem; color: #64748b; margin-top: 8px; font-family: monospace; }
+        .z-timeline-wrap { margin-top: 12px; padding-top: 10px; border-top: 1px solid #1e293b; }
+        .z-timeline-label { font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.05em; color: #64748b; margin-bottom: 5px; }
+        #zTimelineCanvas { display: block; width: 100%; border-radius: 3px; cursor: crosshair; }
         .video-wrap { position: relative; }
         .spike-marker {
             display: none;
@@ -1652,6 +1655,10 @@ const webUIHTML = `<!DOCTYPE html>
             <div class="spike-panel" id="spikePanel">
                 <div class="spike-row" id="spikeRow"></div>
                 <div class="spike-reason" id="spikeReason"></div>
+                <div class="z-timeline-wrap" id="zTimelineWrap" style="display:none">
+                    <div class="z-timeline-label">Z-Score Timeline <span style="color:#fbbf24;font-size:0.65rem;margin-left:6px">│ I</span><span style="color:#a78bfa;font-size:0.65rem;margin-left:6px">│ B</span><span style="color:#94a3b8;font-size:0.65rem;margin-left:6px">│ P</span></div>
+                    <canvas id="zTimelineCanvas"></canvas>
+                </div>
             </div>
         </div>
 
@@ -1667,6 +1674,7 @@ const webUIHTML = `<!DOCTYPE html>
         let currentPage = 1;
         let totalPages = 1;
         let totalClips = 0;
+        let zTimelineData = null;
 
         async function loadClips(camera = '', page = 1) {
             currentPage = page;
@@ -1888,6 +1896,149 @@ const webUIHTML = `<!DOCTYPE html>
 
         let currentSpikeSec = null;
 
+        function drawZTimeline(points, triggerMs, playheadMs) {
+            const wrap = document.getElementById('zTimelineWrap');
+            const canvas = document.getElementById('zTimelineCanvas');
+            if (!points || points.length < 2) { wrap.style.display = 'none'; return; }
+            wrap.style.display = '';
+
+            const dpr = window.devicePixelRatio || 1;
+            const cssW = canvas.offsetWidth || 400;
+            const cssH = 100;
+            canvas.width = Math.round(cssW * dpr);
+            canvas.height = Math.round(cssH * dpr);
+            canvas.style.height = cssH + 'px';
+
+            const ctx = canvas.getContext('2d');
+            ctx.scale(dpr, dpr);
+
+            const pad = { top: 8, right: 10, bottom: 26, left: 28 };
+            const W = cssW - pad.left - pad.right;
+            const H = cssH - pad.top - pad.bottom;
+
+            const maxT = points[points.length - 1].OffsetMS || 1;
+            const rawMax = Math.max(...points.map(p => p.ZScore));
+            const maxZ = Math.max(8, rawMax * 1.05);
+
+            const toX = ms => pad.left + (ms / maxT) * W;
+            const toY = z  => pad.top + H - (z / maxZ) * H;
+
+            // Background
+            ctx.fillStyle = '#0f172a';
+            ctx.fillRect(0, 0, cssW, cssH);
+
+            // Threshold colour bands
+            const y35 = toY(3.5);
+            const y6  = toY(6);
+            ctx.fillStyle = 'rgba(52,211,153,0.07)';
+            ctx.fillRect(pad.left, y35, W, pad.top + H - y35);
+            ctx.fillStyle = 'rgba(251,191,36,0.07)';
+            ctx.fillRect(pad.left, y6, W, y35 - y6);
+            ctx.fillStyle = 'rgba(248,113,113,0.07)';
+            ctx.fillRect(pad.left, pad.top, W, y6 - pad.top);
+
+            // Threshold dashed lines
+            ctx.lineWidth = 0.5;
+            ctx.setLineDash([3, 4]);
+            ctx.strokeStyle = 'rgba(52,211,153,0.35)';
+            ctx.beginPath(); ctx.moveTo(pad.left, y35); ctx.lineTo(pad.left + W, y35); ctx.stroke();
+            ctx.strokeStyle = 'rgba(251,191,36,0.35)';
+            ctx.beginPath(); ctx.moveTo(pad.left, y6);  ctx.lineTo(pad.left + W, y6);  ctx.stroke();
+            ctx.setLineDash([]);
+
+            // Y-axis labels
+            ctx.fillStyle = '#475569';
+            ctx.font = '9px monospace';
+            ctx.textAlign = 'right';
+            [0, 2, 4, 6, 8].forEach(z => {
+                if (z <= maxZ + 0.5) {
+                    ctx.fillText(z, pad.left - 3, toY(z) + 3);
+                }
+            });
+
+            // X-axis time labels — row 2 of gutter (below I-frame labels)
+            ctx.fillStyle = '#475569';
+            ctx.font = '9px monospace';
+            ctx.textAlign = 'center';
+            ctx.fillText('0s', pad.left, pad.top + H + 22);
+            ctx.fillText((maxT / 1000).toFixed(1) + 's', pad.left + W, pad.top + H + 22);
+
+            // GOP structure: draw column backgrounds (I=amber, B=purple, P=subtle).
+            // Column widths come from adjacent PTS offsets; last column fills to edge.
+            // Drawn before the z-line so the line renders on top.
+            for (let i = 0; i < points.length; i++) {
+                const pt = points[i];
+                const x0 = toX(pt.OffsetMS);
+                const x1 = i + 1 < points.length ? toX(points[i + 1].OffsetMS) : pad.left + W;
+                const colW = Math.max(1, x1 - x0);
+
+                if (pt.IsKeyframe) {
+                    // I-frame: amber fill + left border + "I" gutter label
+                    ctx.fillStyle = 'rgba(251,191,36,0.18)';
+                    ctx.fillRect(x0, pad.top, colW, H);
+                    ctx.fillStyle = 'rgba(251,191,36,0.7)';
+                    ctx.fillRect(x0, pad.top, 1, H);
+                    ctx.fillStyle = '#fbbf24';
+                    ctx.font = 'bold 7px monospace';
+                    ctx.textAlign = 'center';
+                    ctx.fillText('I', x0 + Math.min(colW / 2, 5), pad.top + H + 11);
+                } else if (pt.IsBframe) {
+                    // B-frame: violet/purple fill + left border + "B" gutter label
+                    ctx.fillStyle = 'rgba(167,139,250,0.15)';
+                    ctx.fillRect(x0, pad.top, colW, H);
+                    ctx.fillStyle = 'rgba(167,139,250,0.55)';
+                    ctx.fillRect(x0, pad.top, 1, H);
+                    ctx.fillStyle = '#a78bfa';
+                    ctx.font = 'bold 7px monospace';
+                    ctx.textAlign = 'center';
+                    ctx.fillText('B', x0 + Math.min(colW / 2, 5), pad.top + H + 11);
+                } else {
+                    // P-frame: faint alternating tint, no label (most common)
+                    if (i % 2 === 0) {
+                        ctx.fillStyle = 'rgba(148,163,184,0.04)';
+                        ctx.fillRect(x0, pad.top, colW, H);
+                    }
+                }
+            }
+
+            // Z-score line, colour-coded per segment
+            ctx.lineWidth = 1.5;
+            ctx.lineJoin = 'round';
+            for (let i = 1; i < points.length; i++) {
+                const p0 = points[i - 1], p1 = points[i];
+                const avg = (p0.ZScore + p1.ZScore) / 2;
+                ctx.strokeStyle = avg < 3.5 ? '#34d399' : avg < 6 ? '#fbbf24' : '#f87171';
+                ctx.beginPath();
+                ctx.moveTo(toX(p0.OffsetMS), toY(p0.ZScore));
+                ctx.lineTo(toX(p1.OffsetMS), toY(p1.ZScore));
+                ctx.stroke();
+            }
+
+            // Trigger offset vertical line
+            if (triggerMs > 0 && triggerMs <= maxT) {
+                const tx = toX(triggerMs);
+                ctx.strokeStyle = '#f87171';
+                ctx.lineWidth = 1.5;
+                ctx.setLineDash([3, 3]);
+                ctx.beginPath(); ctx.moveTo(tx, pad.top); ctx.lineTo(tx, pad.top + H); ctx.stroke();
+                ctx.setLineDash([]);
+                ctx.fillStyle = '#f87171';
+                ctx.font = '8px monospace';
+                ctx.textAlign = tx > cssW * 0.75 ? 'right' : 'left';
+                ctx.fillText('spike', tx + (ctx.textAlign === 'left' ? 3 : -3), pad.top + 8);
+            }
+
+            // Playhead
+            if (playheadMs !== null && playheadMs !== undefined && playheadMs >= 0 && playheadMs <= maxT) {
+                ctx.strokeStyle = 'rgba(226,232,240,0.6)';
+                ctx.lineWidth = 1;
+                ctx.beginPath();
+                ctx.moveTo(toX(playheadMs), pad.top);
+                ctx.lineTo(toX(playheadMs), pad.top + H);
+                ctx.stroke();
+            }
+        }
+
         function zClass(val) {
             if (val < 3.5) return 'z-ok';
             if (val < 6)   return 'z-warn';
@@ -1930,6 +2081,21 @@ const webUIHTML = `<!DOCTYPE html>
             reason.textContent = meta.reason ? ` + "`Reason: ${meta.reason}`" + ` : '';
             panel.classList.add('visible');
             jumpBtn.style.display = '';
+
+            // Fetch and render z-score timeline if available.
+            zTimelineData = null;
+            document.getElementById('zTimelineWrap').style.display = 'none';
+            if (meta.z_timeline_url) {
+                fetch(meta.z_timeline_url)
+                    .then(r => r.ok ? r.json() : null)
+                    .then(pts => {
+                        if (pts && pts.length >= 2) {
+                            zTimelineData = pts;
+                            drawZTimeline(pts, meta.trigger_offset_ms, null);
+                        }
+                    })
+                    .catch(() => {});
+            }
 
             // Position the spike marker on the video element.
             // The marker is placed at trigger_offset_ms / clip_duration_ms * 100%.
@@ -2188,6 +2354,26 @@ const webUIHTML = `<!DOCTYPE html>
                 // non-fatal
             }
         }
+
+        // Z-timeline: live playhead tracking and click-to-seek.
+        (function() {
+            const player = document.getElementById('videoPlayer');
+            player.addEventListener('timeupdate', function() {
+                if (!zTimelineData || !currentClip || !currentClip.meta) return;
+                drawZTimeline(zTimelineData, currentClip.meta.trigger_offset_ms, player.currentTime * 1000);
+            });
+            document.getElementById('zTimelineCanvas').addEventListener('click', function(e) {
+                if (!zTimelineData || zTimelineData.length < 2) return;
+                const rect = this.getBoundingClientRect();
+                const padLeft = 28, padRight = 10;
+                const x = e.clientX - rect.left - padLeft;
+                const w = rect.width - padLeft - padRight;
+                if (x < 0 || x > w) return;
+                const maxT = zTimelineData[zTimelineData.length - 1].OffsetMS;
+                player.currentTime = (x / w) * maxT / 1000;
+                player.play().catch(() => {});
+            });
+        })();
 
         // Initial load
         loadClips();

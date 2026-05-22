@@ -124,6 +124,7 @@ typedef struct {
     size_t                  au_bytes;
     bool                    au_has_kf;
     bool                    au_has_intra;
+    bool                    au_has_bf;   /* at least one B-slice NAL in this AU */
 
     /* Z-score from the most recently completed access unit.
      * Stored onto each incoming NAL so the ring buffer carries
@@ -215,15 +216,17 @@ static void push_nal_to_ring(cam_nal_ctx_t *ctx,
             ctx->pending_z_score = (float)result.z_score;
         }
 
-        ctx->au_pts      = pts_90khz;
-        ctx->au_bytes    = 0;
-        ctx->au_has_kf   = false;
+        ctx->au_pts       = pts_90khz;
+        ctx->au_bytes     = 0;
+        ctx->au_has_kf    = false;
         ctx->au_has_intra = false;
+        ctx->au_has_bf    = false;
     }
 
     ctx->au_bytes += nal_len;
     if (flags & EMD_NAL_KEYFRAME)  ctx->au_has_kf    = true;
     if (flags & EMD_NAL_PARAMSET)  ctx->au_has_intra = true;
+    if (flags & EMD_NAL_BFRAME)    ctx->au_has_bf    = true;
 }
 
 /* ---------------------------------------------------------------------- */
@@ -245,6 +248,18 @@ static void h264_nal_cb(const uint8_t *nal, size_t len,
     uint8_t flags    = 0;
     if (nal_type == 5)              flags |= EMD_NAL_KEYFRAME;
     if (nal_type == 7 || nal_type == 8) flags |= EMD_NAL_PARAMSET;
+
+    /* Detect B-slice (H.264 §7.4.3): for non-IDR slice NALs (type 1),
+     * parse first_mb_in_slice (ue) then slice_type (ue) from the RBSP.
+     * slice_type % 5 == 1 → B-slice.  Safe to call on hot path: reads ≤8 bytes. */
+    if (nal_type == 1 && len >= 2) {
+        emd_bitreader_t br;
+        emd_bitreader_init(&br, nal + 1, len - 1);
+        (void)emd_br_read_ue(&br);           /* first_mb_in_slice */
+        uint32_t st = emd_br_read_ue(&br);   /* slice_type 0-9 */
+        if (!emd_br_eof(&br) && (st % 5u) == 1u)
+            flags |= EMD_NAL_BFRAME;
+    }
 
     push_nal_to_ring(s->nal_ctx, nal, len, (uint64_t)pts, nal_type, flags);
     s->last_pts = pts;
@@ -272,6 +287,25 @@ static void h265_nal_cb(const uint8_t *nal, size_t len,
         flags |= EMD_NAL_KEYFRAME;
     if (nal_type == 32 || nal_type == 33 || nal_type == 34)
         flags |= EMD_NAL_PARAMSET;
+
+    /* Detect B-slice in H.265 non-IRAP VCL NALs (type 0-9: TRAIL/TSA/STSA/RADL/RASL).
+     * H.265 slice_segment_header for first-slice independent segments:
+     *   first_slice_segment_in_pic_flag u(1)
+     *   slice_pic_parameter_set_id      ue(v)
+     *   slice_type                      ue(v)  → 0=B, 1=P, 2=I
+     * Only parse when first_slice_segment_in_pic_flag=1 (avoids needing PPS for
+     * dependent_slice_segments_enabled_flag).  Covers the vast majority of frames. */
+    if (nal_type <= 9u && len >= 4) {
+        emd_bitreader_t br;
+        emd_bitreader_init(&br, nal + 2, len - 2);   /* skip 2-byte NAL unit header */
+        int first_flag = emd_br_read_bit(&br);        /* first_slice_segment_in_pic_flag */
+        if (first_flag && !emd_br_eof(&br)) {
+            (void)emd_br_read_ue(&br);               /* slice_pic_parameter_set_id */
+            uint32_t st = emd_br_read_ue(&br);       /* slice_type: 0=B, 1=P, 2=I */
+            if (!emd_br_eof(&br) && st == 0u)
+                flags |= EMD_NAL_BFRAME;
+        }
+    }
 
     push_nal_to_ring(s->nal_ctx, nal, len, (uint64_t)pts, nal_type, flags);
     s->last_pts = pts;

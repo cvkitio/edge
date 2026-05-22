@@ -11,8 +11,8 @@ import (
 	"time"
 )
 
-// RawEvent mirrors the JSONL event schema from the edge event log.
-// Field names match the edge spec W4 JSON keys exactly.
+// RawEvent mirrors the JSONL event schema from the edge event log and the
+// NATS events.raw.<site>.<camera> payload. Field names match exactly.
 type RawEvent struct {
 	EventID         string    `json:"event_id"`
 	Site            string    `json:"site,omitempty"`
@@ -26,13 +26,20 @@ type RawEvent struct {
 	Bytes           uint64    `json:"bytes"`
 	BPFSlow         float64   `json:"bpf_slow"`
 	BPFEwma         float64   `json:"bpf_ewma"`
+	BPFVar          float64   `json:"bpf_var"`
+	SinceKF         uint32    `json:"since_kf"`
 	Reason          string    `json:"reason"`
+	FSMBefore       uint8     `json:"fsm_before"`
+	FSMAfter        uint8     `json:"fsm_after"`
 	PTSStart        uint64    `json:"pts_start"`
 	PTSEnd          uint64    `json:"pts_end"`
 	Codec           string    `json:"codec"`
 	FPS             float64   `json:"fps"`
 	ClipID          string    `json:"clip_id,omitempty"`
 	ClipPath        string    `json:"clip_path,omitempty"`
+	ClipURL         string    `json:"clip_url,omitempty"`
+	ZTimelineURL    string    `json:"z_timeline_url,omitempty"`
+	TriggerOffsetMS uint32    `json:"trigger_offset_ms"`
 	TargetClassMask uint8     `json:"target_class_mask"`
 	AgentVersion    string    `json:"agent_version"`
 }

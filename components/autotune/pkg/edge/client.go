@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"net/url"
 	"time"
 )
 
@@ -58,4 +59,45 @@ func (c *Client) Cameras(ctx context.Context) ([]string, error) {
 		return nil, err
 	}
 	return out.Cameras, nil
+}
+
+// clipsMeta is the minimal clip structure needed to read operator labels.
+type clipsMeta struct {
+	EventID string `json:"event_id"`
+}
+
+type clipsEntry struct {
+	Label string     `json:"label"`
+	Meta  *clipsMeta `json:"meta"`
+}
+
+type clipsPage struct {
+	Clips      []clipsEntry `json:"clips"`
+	TotalPages int          `json:"total_pages"`
+}
+
+// GetClipLabels fetches operator-assigned labels for a camera's clips and
+// returns a map of event_id → label ("tp", "fp", or "reference").
+// Only clips that have both a label and clip metadata (event_id) are included.
+func (c *Client) GetClipLabels(ctx context.Context, camera string) (map[string]string, error) {
+	labels := make(map[string]string)
+	page := 1
+	for {
+		path := fmt.Sprintf("/api/clips?camera=%s&page=%d&page_size=250",
+			url.QueryEscape(camera), page)
+		var resp clipsPage
+		if err := c.get(ctx, path, &resp); err != nil {
+			return nil, fmt.Errorf("get clip labels page %d: %w", page, err)
+		}
+		for _, clip := range resp.Clips {
+			if clip.Label != "" && clip.Meta != nil && clip.Meta.EventID != "" {
+				labels[clip.Meta.EventID] = clip.Label
+			}
+		}
+		if page >= resp.TotalPages || resp.TotalPages == 0 {
+			break
+		}
+		page++
+	}
+	return labels, nil
 }

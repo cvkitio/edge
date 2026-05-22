@@ -12,8 +12,8 @@ metadata:
   namespace: emd
 data:
   agent.toml: |
-    # Generated config will be injected here
-    # Use: kubectl create configmap emd-agent-config --from-file=agent.toml -n emd
+    # Populate from your site-specific agent.toml:
+    # kubectl create configmap emd-agent-config --from-file=agent.toml -n emd --dry-run=client -o yaml | kubectl apply -f -
 
 ---
 apiVersion: v1
@@ -27,7 +27,9 @@ spec:
   resources:
     requests:
       storage: 100Gi
-  storageClassName: local-path
+  # Set storageClassName to match your cluster's available storage class.
+  # storageClassName: talos-hostpath   # Talos / OpenEBS
+  # storageClassName: local-path       # k3s default
 
 ---
 apiVersion: apps/v1
@@ -37,9 +39,11 @@ metadata:
   namespace: emd
   labels:
     app: emd-agent
-    version: phase2-mvp
 spec:
   replicas: 1
+  # Recreate is required with ReadWriteOnce PVCs on local storage.
+  strategy:
+    type: Recreate
   selector:
     matchLabels:
       app: emd-agent
@@ -47,7 +51,6 @@ spec:
     metadata:
       labels:
         app: emd-agent
-        version: phase2-mvp
       annotations:
         prometheus.io/scrape: "true"
         prometheus.io/port: "9464"
@@ -59,8 +62,6 @@ spec:
       - name: emd-agent
         image: ghcr.io/cvkitio/emd-agent:latest
         imagePullPolicy: Always
-
-        # Command to include API server
         args:
         - "--config"
         - "/etc/emd-agent/agent.toml"
@@ -68,34 +69,24 @@ spec:
         - ":8080"
         - "--metrics"
         - ":9464"
-        - "--pprof"
-        - "localhost:6060"
-
-        # Resource limits (adjusted for development cluster)
         resources:
           requests:
-            cpu: "1000m"      # 1 core (development/testing)
-            memory: "2Gi"     # 2 GB (14 cameras)
+            cpu: "1000m"
+            memory: "2Gi"
           limits:
-            cpu: "4000m"      # 4 cores (burst capacity)
-            memory: "6Gi"     # 6 GB (overhead for 14 cameras)
-
-        # Environment
+            cpu: "4000m"
+            memory: "6Gi"
         env:
         - name: GOMAXPROCS
           value: "8"
         - name: GOMEMLIMIT
           value: "7GiB"
-
-        # Volumes
         volumeMounts:
         - name: config
           mountPath: /etc/emd-agent
           readOnly: true
         - name: data
           mountPath: /var/lib/emd-agent
-
-        # Ports
         ports:
         - name: metrics
           containerPort: 9464
@@ -103,8 +94,6 @@ spec:
         - name: api
           containerPort: 8080
           protocol: TCP
-
-        # Health checks
         livenessProbe:
           httpGet:
             path: /healthz
@@ -113,7 +102,6 @@ spec:
           periodSeconds: 30
           timeoutSeconds: 5
           failureThreshold: 3
-
         readinessProbe:
           httpGet:
             path: /healthz
@@ -121,18 +109,14 @@ spec:
           initialDelaySeconds: 10
           periodSeconds: 10
           timeoutSeconds: 3
-
-        # Security
         securityContext:
           runAsNonRoot: true
           runAsUser: 1000
           allowPrivilegeEscalation: false
-          readOnlyRootFilesystem: false  # Need write for /var/lib/emd-agent
+          readOnlyRootFilesystem: false
           capabilities:
             drop:
             - ALL
-
-      # Volumes
       volumes:
       - name: config
         configMap:
@@ -140,15 +124,6 @@ spec:
       - name: data
         persistentVolumeClaim:
           claimName: emd-agent-data
-
-      # Scheduling (nodeSelector removed for development cluster)
-      # nodeSelector:
-      #   workload: camera-ingestion
-      # tolerations:
-      # - key: "workload"
-      #   operator: "Equal"
-      #   value: "camera-ingestion"
-      #   effect: "NoSchedule"
 
 ---
 apiVersion: v1
@@ -185,24 +160,31 @@ spec:
     port: 8080
     targetPort: 8080
     protocol: TCP
-  - name: metrics
-    port: 9464
-    targetPort: 9464
-    protocol: TCP
 
 ---
-apiVersion: monitoring.coreos.com/v1
-kind: ServiceMonitor
+# Ingress — fill in your hostname and remove/adjust TLS as needed.
+# Requires an ingress controller (e.g. ingress-nginx) and optionally cert-manager.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
 metadata:
   name: emd-agent
   namespace: emd
-  labels:
-    app: emd-agent
+  annotations:
+    # cert-manager.io/cluster-issuer: letsencrypt-prod
 spec:
-  selector:
-    matchLabels:
-      app: emd-agent
-  endpoints:
-  - port: metrics
-    interval: 30s
-    path: /metrics
+  ingressClassName: nginx
+  rules:
+  - host: emd-agent.example.com
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: emd-agent-api
+            port:
+              number: 8080
+  # tls:
+  # - hosts:
+  #   - emd-agent.example.com
+  #   secretName: emd-agent-tls
