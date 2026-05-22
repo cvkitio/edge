@@ -98,6 +98,13 @@ bool emd_inspector_process(emd_inspector_state_t *s,
                      (s->bpf_var + EMD_INSP_ALPHA_SLOW * diff_from_slow * diff_from_slow);
     }
 
+    /* Capture since_kf BEFORE updating it.  The unexpected-IDR check needs the
+     * count from the previous frame: if since_kf was already 0 when a new IDR
+     * arrives it means two IDRs came back-to-back (true scene-change signal).
+     * Updating since_kf first and then checking would make the condition true
+     * for every IDR, which is wrong. */
+    uint32_t prev_since_kf = s->since_kf;
+
     /* Track since_kf */
     if (in->is_keyframe) {
         s->since_kf = 0;
@@ -105,24 +112,41 @@ bool emd_inspector_process(emd_inspector_state_t *s,
         s->since_kf++;
     }
 
-    /* Z-score computation */
-    double denom = sqrt(s->bpf_var);
-    if (denom < cfg->bpf_floor) denom = cfg->bpf_floor;
-    double z = (bytes - s->bpf_slow) / denom;
+    /* Z-score computation.
+     * Keyframe AUs are excluded from bpf_slow but must also be excluded from
+     * the z-score signal: an IDR at 229KB against a 136-byte P-frame baseline
+     * yields z≈1366, triggering false motion on every GOP boundary.
+     * IDR detection is handled separately via is_unexpected_idr. */
+    double z = 0.0;
+    if (!in->is_keyframe) {
+        double denom = sqrt(s->bpf_var);
+        if (denom < cfg->bpf_floor) denom = cfg->bpf_floor;
+        z = (bytes - s->bpf_slow) / denom;
+    }
 
     result_out->z_score      = z;
     result_out->intra_ratio  = in->intra_ratio_proxy;
 
-    /* Detection rule */
-    bool is_unexpected_idr = (in->is_keyframe && s->since_kf == 0 &&
+    /* Detection rule.
+     *
+     * is_unexpected_idr: fires only when prev_since_kf == 0, meaning this IDR
+     * arrived immediately after the previous IDR with no P-frames between them
+     * (genuine out-of-band scene-change refresh).  Using prev_since_kf avoids
+     * the ordering bug where since_kf is always 0 at the check point because it
+     * was just reset above. */
+    bool is_unexpected_idr = (in->is_keyframe && prev_since_kf == 0 &&
                                !cfg->configured_periodic_kf);
     /* Byte floor: suppress signals from NAL units below the configured threshold.
      * This rejects brief encoder artefacts that produce high z-scores but negligible
      * actual change (e.g. a single bright frame from IR illumination flicker). */
     bool bytes_ok = (cfg->min_bytes_threshold == 0 ||
                      in->byte_count >= cfg->min_bytes_threshold);
-    bool is_z_motion       = bytes_ok && (z > cfg->motion_z_high);
-    bool is_intra_motion   = bytes_ok && (in->intra_ratio_proxy > cfg->intra_ratio_high);
+    bool is_z_motion     = bytes_ok && !in->is_keyframe && (z > cfg->motion_z_high);
+    /* intra_ratio_proxy = au_bytes / bpf_slow.  For keyframe AUs this is always
+     * enormous (IDR >> P-frame baseline) and carries no intra-MB signal.
+     * Only evaluate it for non-keyframe AUs where it reflects actual
+     * intra-macroblock density relative to the scene baseline. */
+    bool is_intra_motion = bytes_ok && !in->is_keyframe && (in->intra_ratio_proxy > cfg->intra_ratio_high);
 
     bool signal = is_z_motion || is_unexpected_idr || is_intra_motion;
 

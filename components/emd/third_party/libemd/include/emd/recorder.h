@@ -36,6 +36,17 @@ extern const emd_mux_backend_t emd_mux_mpegts;
 extern const emd_mux_backend_t emd_mux_fmp4;
 
 /* -------------------------------------------------------------------------
+ * Z-score timeline point: one entry per access unit in the clip window.
+ * ---------------------------------------------------------------------- */
+typedef struct {
+    uint32_t offset_ms;   /* milliseconds from actual clip start (first frame written,
+                           * which may precede from_pts after IDR-alignment widening) */
+    float    z_score;     /* inspector z-score at this access unit   */
+    uint8_t  is_keyframe; /* 1 if this AU contains a keyframe NAL, 0 otherwise */
+    uint8_t  is_bframe;   /* 1 if the AU slice_type is B, 0 otherwise (P or unknown) */
+} emd_z_point_t;
+
+/* -------------------------------------------------------------------------
  * Clip sidecar header (written as .json beside the clip)
  * ---------------------------------------------------------------------- */
 typedef struct {

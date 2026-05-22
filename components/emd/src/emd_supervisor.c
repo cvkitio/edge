@@ -124,6 +124,12 @@ typedef struct {
     size_t                  au_bytes;
     bool                    au_has_kf;
     bool                    au_has_intra;
+    bool                    au_has_bf;   /* at least one B-slice NAL in this AU */
+
+    /* Z-score from the most recently completed access unit.
+     * Stored onto each incoming NAL so the ring buffer carries
+     * per-frame signal data for clip timeline extraction. */
+    float                   pending_z_score;
 } cam_nal_ctx_t;
 
 static void push_nal_to_ring(cam_nal_ctx_t *ctx,
@@ -139,6 +145,7 @@ static void push_nal_to_ring(cam_nal_ctx_t *ctx,
     rec.flags     = flags;
     rec.cam_id    = ctx->cfg->cam_id;
     rec.length    = (uint32_t)nal_len;
+    rec.z_score   = ctx->pending_z_score; /* z-score from the previous AU */
 
     struct timespec ts;
     clock_gettime(CLOCK_MONOTONIC, &ts);
@@ -156,12 +163,18 @@ static void push_nal_to_ring(cam_nal_ctx_t *ctx,
         if (ctx->au_bytes > 0) {
             emd_inspector_input_t in;
             memset(&in, 0, sizeof(in));
-            in.pts_90khz         = ctx->au_pts;
-            in.mono_ns           = rec.mono_ns;
-            in.byte_count        = ctx->au_bytes;
-            in.is_keyframe       = ctx->au_has_kf;
-            in.is_intra          = ctx->au_has_intra;
-            in.intra_ratio_proxy = ctx->au_has_intra ? 2.0 : 0.5;
+            in.pts_90khz  = ctx->au_pts;
+            in.mono_ns    = rec.mono_ns;
+            in.byte_count = ctx->au_bytes;
+            in.is_keyframe = ctx->au_has_kf;
+            in.is_intra    = ctx->au_has_intra;
+            /* intra_ratio_proxy: ratio of this AU's bytes to the slow EWMA.
+             * Values > 1.0 indicate an access unit larger than the background
+             * baseline (intra-heavy or keyframe). We guard against div/0 with
+             * the bpf_floor already held in the inspector state. */
+            double denom = ctx->insp_state.bpf_slow > 0.0
+                           ? ctx->insp_state.bpf_slow : 100.0;
+            in.intra_ratio_proxy = (double)ctx->au_bytes / denom;
 
             emd_inspector_result_t result;
             bool fired = emd_inspector_process(&ctx->insp_state,
@@ -198,17 +211,22 @@ static void push_nal_to_ring(cam_nal_ctx_t *ctx,
 
                 emd_event_bus_push(ctx->bus, &ev);
             }
+            /* Always stamp the latest z-score so ring buffer NALs carry
+             * per-AU signal data for clip timeline extraction. */
+            ctx->pending_z_score = (float)result.z_score;
         }
 
-        ctx->au_pts      = pts_90khz;
-        ctx->au_bytes    = 0;
-        ctx->au_has_kf   = false;
+        ctx->au_pts       = pts_90khz;
+        ctx->au_bytes     = 0;
+        ctx->au_has_kf    = false;
         ctx->au_has_intra = false;
+        ctx->au_has_bf    = false;
     }
 
     ctx->au_bytes += nal_len;
     if (flags & EMD_NAL_KEYFRAME)  ctx->au_has_kf    = true;
     if (flags & EMD_NAL_PARAMSET)  ctx->au_has_intra = true;
+    if (flags & EMD_NAL_BFRAME)    ctx->au_has_bf    = true;
 }
 
 /* ---------------------------------------------------------------------- */
@@ -230,6 +248,24 @@ static void h264_nal_cb(const uint8_t *nal, size_t len,
     uint8_t flags    = 0;
     if (nal_type == 5)              flags |= EMD_NAL_KEYFRAME;
     if (nal_type == 7 || nal_type == 8) flags |= EMD_NAL_PARAMSET;
+
+    /* Detect B-slice (H.264 §7.4.3): for non-IDR slice NALs (type 1),
+     * parse first_mb_in_slice (ue) then slice_type (ue) from the RBSP.
+     * slice_type % 5 == 1 → B-slice.  Strip emulation-prevention bytes first
+     * (0x000003 sequences in the bitstream must be removed before Exp-Golomb
+     * parsing, otherwise misaligned reads produce wrong slice_type values).
+     * Safe to call on hot path: only reads ≤32 bytes from the RBSP. */
+    if (nal_type == 1 && len >= 2) {
+        uint8_t rbsp[32];
+        size_t rbsp_len = emd_h264_remove_emulation(nal + 1, len - 1,
+                                                    rbsp, sizeof(rbsp));
+        emd_bitreader_t br;
+        emd_bitreader_init(&br, rbsp, rbsp_len);
+        (void)emd_br_read_ue(&br);           /* first_mb_in_slice */
+        uint32_t st = emd_br_read_ue(&br);   /* slice_type 0-9 */
+        if (!emd_br_eof(&br) && (st % 5u) == 1u)
+            flags |= EMD_NAL_BFRAME;
+    }
 
     push_nal_to_ring(s->nal_ctx, nal, len, (uint64_t)pts, nal_type, flags);
     s->last_pts = pts;
@@ -257,6 +293,30 @@ static void h265_nal_cb(const uint8_t *nal, size_t len,
         flags |= EMD_NAL_KEYFRAME;
     if (nal_type == 32 || nal_type == 33 || nal_type == 34)
         flags |= EMD_NAL_PARAMSET;
+
+    /* Detect B-slice in H.265 non-IRAP VCL NALs (type 0-9: TRAIL/TSA/STSA/RADL/RASL).
+     * H.265 slice_segment_header for first-slice independent segments:
+     *   first_slice_segment_in_pic_flag u(1)
+     *   slice_pic_parameter_set_id      ue(v)
+     *   slice_type                      ue(v)  → 0=B, 1=P, 2=I
+     * Only parse when first_slice_segment_in_pic_flag=1 (avoids needing PPS for
+     * dependent_slice_segments_enabled_flag).  Covers the vast majority of frames.
+     * Emulation-prevention bytes in the 2-byte NAL unit header payload must be
+     * stripped before Exp-Golomb parsing. */
+    if (nal_type <= 9u && len >= 4) {
+        uint8_t rbsp[32];
+        size_t rbsp_len = emd_h265_remove_emulation(nal + 2, len - 2,
+                                                    rbsp, sizeof(rbsp));
+        emd_bitreader_t br;
+        emd_bitreader_init(&br, rbsp, rbsp_len);
+        int first_flag = emd_br_read_bit(&br);   /* first_slice_segment_in_pic_flag */
+        if (first_flag && !emd_br_eof(&br)) {
+            (void)emd_br_read_ue(&br);           /* slice_pic_parameter_set_id */
+            uint32_t st = emd_br_read_ue(&br);   /* slice_type: 0=B, 1=P, 2=I */
+            if (!emd_br_eof(&br) && st == 0u)
+                flags |= EMD_NAL_BFRAME;
+        }
+    }
 
     push_nal_to_ring(s->nal_ctx, nal, len, (uint64_t)pts, nal_type, flags);
     s->last_pts = pts;

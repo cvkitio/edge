@@ -34,7 +34,7 @@ extern "C" {
  * ------------------------------------------------------------------------- */
 
 #define EMD_ABI_VERSION_MAJOR 1
-#define EMD_ABI_VERSION_MINOR 1  /* added inspector signal snapshot to emd_event_t */
+#define EMD_ABI_VERSION_MINOR 3  /* trigger_pts_90khz in emd_clip_request_t; fixes pre_roll_ms */
 #define EMD_ABI_VERSION_PATCH 0
 
 /*
@@ -197,11 +197,24 @@ void emd_cam_set_stats_cb(emd_cam_t *cam,
  * Clip recording request.
  *
  * Used by emd_cam_record() to specify where and how to write the clip.
+ *
+ * z_buf / z_buf_count / z_out_count are optional: set z_buf=NULL to skip
+ * timeline extraction. When provided, one emd_z_point_t is written per
+ * unique access unit PTS in the snapshot (deduplicated by PTS), up to
+ * z_buf_count entries. *z_out_count is set to the actual count written.
  */
 typedef struct {
     const char         *out_path;     /* path to .part file in inflight dir */
     const char         *container;    /* "mpegts" or "fmp4" */
     emd_fsync_policy_t  fsync_policy; /* EMD_FSYNC_ON_CLOSE, etc. */
+    /* Optional z-score timeline output (NULL = skip) */
+    emd_z_point_t      *z_buf;        /* caller-allocated; NULL to skip */
+    uint32_t            z_buf_count;  /* capacity of z_buf */
+    uint32_t           *z_out_count;  /* set to actual count written (may be NULL) */
+    /* Trigger PTS used to compute hdr_out->pre_roll_ms from actual first_pts.
+     * Set to the PTS of the access unit that fired the motion event (90 kHz).
+     * If zero, pre_roll_ms is left as zero in the header. */
+    uint64_t            trigger_pts_90khz;
 } emd_clip_request_t;
 
 /*

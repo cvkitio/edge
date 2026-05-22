@@ -33,8 +33,10 @@ type Event struct {
 	ClipID          string    `json:"clip_id"`
 	ClipURL         string    `json:"clip_url,omitempty"`
 	ThumbsURL       string    `json:"thumbs_url,omitempty"`
+	TriggerOffsetMS uint32    `json:"trigger_offset_ms"` // ms offset into clip where motion triggered
 	TargetClassMask uint8     `json:"target_class_mask"`
 	AgentVersion    string    `json:"agent_version"`
+	ZTimelineURL    string    `json:"z_timeline_url,omitempty"`
 }
 
 // Label is the result of the post-processor's vision gate for a single event.

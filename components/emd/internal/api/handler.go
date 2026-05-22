@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"io/fs"
 	"log"
 	"math"
 	"net/http"
@@ -33,6 +34,10 @@ type Handler struct {
 	cpuMu     sync.Mutex
 	cpuCached float64
 	cpuAt     time.Time
+
+	diskMu    sync.Mutex
+	diskUsed  uint64
+	diskAt    time.Time
 }
 
 // NewHandler creates a new API handler.
@@ -117,6 +122,27 @@ type CPUStats struct {
 	NumCPU      int     `json:"num_cpu"`
 }
 
+// CameraStatsEntry holds aggregated signal metrics for one camera over a time window.
+type CameraStatsEntry struct {
+	Name           string     `json:"name"`
+	EventCount24h  int        `json:"event_count_24h"`
+	LastEventTS    *time.Time `json:"last_event_ts,omitempty"`
+	ZScoreLast     float64    `json:"z_score_last"`
+	ZScoreAvg      float64    `json:"z_score_avg"`
+	ZScoreMax      float64    `json:"z_score_max"`
+	BPFSlowLast    float64    `json:"bpf_slow_last"`
+	BPFEwmaLast    float64    `json:"bpf_ewma_last"`
+	IntraRatioLast float64    `json:"intra_ratio_last"`
+	IntraRatioAvg  float64    `json:"intra_ratio_avg"`
+}
+
+// AllCameraStatsResponse is returned by GET /api/cameras/stats.
+type AllCameraStatsResponse struct {
+	Cameras []CameraStatsEntry `json:"cameras"`
+	From    time.Time          `json:"from"`
+	To      time.Time          `json:"to"`
+}
+
 // RegisterRoutes registers all API routes on the given mux.
 func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/cameras", h.handleCameras)
@@ -159,12 +185,24 @@ func (h *Handler) handleCameraConfig(w http.ResponseWriter, r *http.Request) {
 	path := strings.TrimPrefix(r.URL.Path, "/api/cameras/")
 	parts := strings.Split(path, "/")
 
-	if len(parts) < 2 || parts[0] == "" {
+	if len(parts) < 1 || parts[0] == "" {
 		http.Error(w, "Not found", http.StatusNotFound)
 		return
 	}
 
 	camName := parts[0]
+
+	// /api/cameras/stats — aggregate stats for all cameras.
+	if camName == "stats" && len(parts) == 1 {
+		h.handleAllCameraStats(w, r)
+		return
+	}
+
+	if len(parts) < 2 {
+		http.Error(w, "Not found", http.StatusNotFound)
+		return
+	}
+
 	sub := parts[1]
 
 	switch sub {
@@ -238,6 +276,67 @@ func (h *Handler) handleCameraEvents(w http.ResponseWriter, r *http.Request, cam
 			return
 		}
 	}
+}
+
+// handleAllCameraStats returns aggregated z-score / signal metrics for all cameras.
+// GET /api/cameras/stats
+func (h *Handler) handleAllCameraStats(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	to := time.Now()
+	from := to.Add(-24 * time.Hour)
+
+	cameras := h.supervisor.GetCameraNames()
+	entries := make([]CameraStatsEntry, 0, len(cameras))
+
+	for _, cam := range cameras {
+		reader, err := eventlog.Open(h.eventLogRoot, cam)
+		if err != nil {
+			entries = append(entries, CameraStatsEntry{Name: cam})
+			continue
+		}
+		events, err := reader.Range(from, to, 10000)
+		if err != nil || len(events) == 0 {
+			entries = append(entries, CameraStatsEntry{Name: cam})
+			continue
+		}
+
+		var zSum, irSum, zMax float64
+		for _, e := range events {
+			zSum += e.ZScore
+			irSum += e.IntraRatio
+			if e.ZScore > zMax {
+				zMax = e.ZScore
+			}
+		}
+		count := len(events)
+		last := events[count-1]
+		lastTS := last.TS
+
+		entries = append(entries, CameraStatsEntry{
+			Name:           cam,
+			EventCount24h:  count,
+			LastEventTS:    &lastTS,
+			ZScoreLast:     last.ZScore,
+			ZScoreAvg:      zSum / float64(count),
+			ZScoreMax:      zMax,
+			BPFSlowLast:    last.BPFSlow,
+			BPFEwmaLast:    last.BPFEwma,
+			IntraRatioLast: last.IntraRatio,
+			IntraRatioAvg:  irSum / float64(count),
+		})
+	}
+
+	sort.Slice(entries, func(i, j int) bool {
+		return entries[i].Name < entries[j].Name
+	})
+
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Access-Control-Allow-Origin", "*")
+	json.NewEncoder(w).Encode(AllCameraStatsResponse{Cameras: entries, From: from, To: to})
 }
 
 // getInspectorConfig returns the current inspector configuration for a camera.
@@ -364,13 +463,14 @@ func (h *Handler) updateInspectorConfig(w http.ResponseWriter, r *http.Request, 
 
 // ClipInfo represents metadata about a video clip.
 type ClipInfo struct {
-	Camera   string    `json:"camera"`
-	Filename string    `json:"filename"`
-	Path     string    `json:"path"`
-	Size     int64     `json:"size"`
-	ModTime  time.Time `json:"mod_time"`
-	URL      string    `json:"url"`
-	Label    string    `json:"label,omitempty"` // "tp", "fp", "reference", or ""
+	Camera   string           `json:"camera"`
+	Filename string           `json:"filename"`
+	Path     string           `json:"path"`
+	Size     int64            `json:"size"`
+	ModTime  time.Time        `json:"mod_time"`
+	URL      string           `json:"url"`
+	Label    string           `json:"label,omitempty"` // "tp", "fp", "reference", or ""
+	Meta     *agent.ClipMeta  `json:"meta,omitempty"`  // trigger stats sidecar, nil if not present
 }
 
 // ClipsListResponse represents a paginated list of clips.
@@ -398,6 +498,19 @@ type LabelRequest struct {
 // clipLabelPath returns the sidecar file path for a clip.
 func clipLabelPath(clipFilePath string) string {
 	return clipFilePath + ".label.json"
+}
+
+// readClipMeta reads the trigger-stats sidecar for a clip; returns nil if absent.
+func readClipMeta(clipFilePath string) *agent.ClipMeta {
+	b, err := os.ReadFile(clipFilePath + ".meta.json")
+	if err != nil {
+		return nil
+	}
+	var m agent.ClipMeta
+	if err := json.Unmarshal(b, &m); err != nil {
+		return nil
+	}
+	return &m
 }
 
 // readClipLabel reads the sidecar label for a clip; returns nil if unlabeled.
@@ -539,6 +652,7 @@ func (h *Handler) scanClips(cameraFilter string) ([]ClipInfo, error) {
 					ModTime:  info.ModTime(),
 					URL:      fmt.Sprintf("/api/clips/%s/%s", cameraName, urlPath),
 					Label:    label,
+					Meta:     readClipMeta(path),
 				})
 			}
 
@@ -648,6 +762,8 @@ func (h *Handler) handleClipFile(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "video/mp4")
 	case ".mkv":
 		w.Header().Set("Content-Type", "video/x-matroska")
+	case ".json":
+		w.Header().Set("Content-Type", "application/json")
 	default:
 		w.Header().Set("Content-Type", "application/octet-stream")
 	}
@@ -875,22 +991,48 @@ func (h *Handler) getDiskStats() DiskStats {
 	if path == "" {
 		path = "/"
 	}
+
+	// Use the data root (parent of clipRoot) so we account for clips, eventlog,
+	// and inflight — all directories written by emd-agent under /var/lib/emd-agent.
+	// On local-hostpath PVCs the volume is a directory on a shared host partition,
+	// so syscall.Statfs returns the whole node's partition stats, not emd's usage.
+	// Walk the data directory to get the actual bytes emd-agent has written.
+	// The walk is cached for 30 s to avoid O(n files) disk I/O on every /api/system poll.
+	dataRoot := filepath.Dir(path)
+	h.diskMu.Lock()
+	emdUsed := h.diskUsed
+	if time.Since(h.diskAt) >= 30*time.Second {
+		var walked uint64
+		_ = filepath.WalkDir(dataRoot, func(_ string, d fs.DirEntry, err error) error {
+			if err != nil || d.IsDir() {
+				return nil
+			}
+			if info, ie := d.Info(); ie == nil {
+				walked += uint64(info.Size()) //nolint:gosec
+			}
+			return nil
+		})
+		h.diskUsed = walked
+		h.diskAt = time.Now()
+		emdUsed = walked
+	}
+	h.diskMu.Unlock()
+
 	var stat syscall.Statfs_t
 	if err := syscall.Statfs(path, &stat); err != nil {
 		log.Printf("statfs %s: %v", path, err)
-		return DiskStats{Path: path}
+		return DiskStats{Path: path, UsedBytes: emdUsed}
 	}
 	total := stat.Blocks * uint64(stat.Bsize) //nolint:unconvert
 	free := stat.Bavail * uint64(stat.Bsize)  //nolint:unconvert
-	used := total - free
 	var pct float64
 	if total > 0 {
-		pct = math.Round(float64(used)/float64(total)*1000) / 10
+		pct = math.Round(float64(emdUsed)/float64(total)*1000) / 10
 	}
 	return DiskStats{
-		Path:        path,
+		Path:        dataRoot,
 		TotalBytes:  total,
-		UsedBytes:   used,
+		UsedBytes:   emdUsed,
 		FreeBytes:   free,
 		UsedPercent: pct,
 	}
@@ -1180,6 +1322,51 @@ const webUIHTML = `<!DOCTYPE html>
             color: #64748b;
             margin-left: 4px;
         }
+        .spike-panel {
+            display: none;
+            margin-top: 14px;
+            padding: 12px 14px;
+            background: #0f172a;
+            border: 1px solid #334155;
+            border-radius: 6px;
+            font-size: 0.82rem;
+        }
+        .spike-panel.visible { display: block; }
+        .spike-row {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 18px;
+            align-items: center;
+        }
+        .spike-stat { display: flex; flex-direction: column; gap: 2px; }
+        .spike-stat-label { font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.05em; color: #64748b; }
+        .spike-stat-value { font-weight: 600; color: #e2e8f0; }
+        .spike-stat-value.z-ok   { color: #34d399; }
+        .spike-stat-value.z-warn { color: #fbbf24; }
+        .spike-stat-value.z-crit { color: #f87171; }
+        .spike-reason { font-size: 0.78rem; color: #64748b; margin-top: 8px; font-family: monospace; }
+        .z-timeline-wrap { margin-top: 12px; padding-top: 10px; border-top: 1px solid #1e293b; }
+        .z-timeline-label { font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.05em; color: #64748b; margin-bottom: 5px; }
+        #zTimelineCanvas { display: block; width: 100%; border-radius: 3px; cursor: crosshair; }
+        .video-wrap { position: relative; }
+        .spike-marker {
+            display: none;
+            position: absolute;
+            bottom: 0;
+            width: 2px;
+            background: #f87171;
+            pointer-events: none;
+            z-index: 10;
+        }
+        .spike-marker-label {
+            position: absolute;
+            top: -18px;
+            left: 2px;
+            font-size: 0.65rem;
+            color: #f87171;
+            white-space: nowrap;
+            font-weight: 600;
+        }
         .label-badge {
             display: inline-block;
             font-size: 0.68rem;
@@ -1315,6 +1502,62 @@ const webUIHTML = `<!DOCTYPE html>
             font-size: 0.82rem;
             cursor: pointer;
         }
+        .signal-section {
+            background: #1e293b;
+            border: 1px solid #334155;
+            border-radius: 8px;
+            margin-bottom: 25px;
+            overflow: hidden;
+        }
+        .signal-header {
+            padding: 12px 20px;
+            font-size: 0.9rem;
+            font-weight: 600;
+            color: #94a3b8;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            user-select: none;
+        }
+        .signal-header:hover { background: #243044; }
+        .signal-toggle { margin-left: auto; font-size: 0.75rem; color: #64748b; }
+        .signal-table-wrap { overflow-x: auto; }
+        .signal-table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 0.82rem;
+        }
+        .signal-table th {
+            padding: 8px 14px;
+            text-align: left;
+            font-size: 0.72rem;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            color: #64748b;
+            border-bottom: 1px solid #334155;
+            white-space: nowrap;
+        }
+        .signal-table td {
+            padding: 7px 14px;
+            border-bottom: 1px solid #1e293b;
+            color: #cbd5e1;
+            white-space: nowrap;
+        }
+        .signal-table tr:last-child td { border-bottom: none; }
+        .signal-table tr:hover td { background: #243044; }
+        .z-chip {
+            display: inline-block;
+            padding: 2px 8px;
+            border-radius: 4px;
+            font-weight: 600;
+            font-size: 0.8rem;
+        }
+        .z-ok   { background: #14532d; color: #86efac; }
+        .z-warn { background: #713f12; color: #fde68a; }
+        .z-crit { background: #7f1d1d; color: #fca5a5; }
+        .cam-name-cell { color: #60a5fa; font-weight: 500; }
+        .no-data-cell { color: #475569; font-style: italic; }
     </style>
     <script src="https://cdn.jsdelivr.net/npm/hls.js@latest"></script>
 </head>
@@ -1374,17 +1617,61 @@ const webUIHTML = `<!DOCTYPE html>
             </div>
         </div>
 
+        <div class="signal-section">
+            <div class="signal-header" onclick="toggleSignalPanel()">
+                📊 Camera Signal Metrics (24 h)
+                <span class="signal-toggle" id="signalToggle">▼</span>
+            </div>
+            <div id="signalPanel">
+                <div class="signal-table-wrap">
+                    <table class="signal-table">
+                        <thead>
+                            <tr>
+                                <th>Camera</th>
+                                <th>Events</th>
+                                <th>Last Event</th>
+                                <th>Z-Score (last)</th>
+                                <th>Z-Score (avg)</th>
+                                <th>Z-Score (max)</th>
+                                <th>BPF Slow</th>
+                                <th>BPF EWMA</th>
+                                <th>Intra Ratio (last)</th>
+                            </tr>
+                        </thead>
+                        <tbody id="signalBody">
+                            <tr><td colspan="9" style="text-align:center;color:#64748b;padding:20px">Loading…</td></tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+
         <div id="errorContainer"></div>
 
         <div class="player-section" id="playerSection">
             <div class="player-title" id="playerTitle">Now Playing</div>
-            <video id="videoPlayer" controls preload="metadata"></video>
+            <div class="video-wrap">
+                <video id="videoPlayer" controls preload="metadata"></video>
+                <div class="spike-marker" id="spikeMarker">
+                    <span class="spike-marker-label">spike</span>
+                </div>
+            </div>
             <div class="label-buttons">
                 <button class="label-btn tp"    onclick="setLabel('tp')">✓ True Positive</button>
                 <button class="label-btn fp"    onclick="setLabel('fp')">✗ False Positive</button>
                 <button class="label-btn ref"   onclick="setLabel('reference')">⭐ Reference</button>
                 <button class="label-btn clear" onclick="clearLabel()">Clear</button>
+                <button id="jumpSpikeBtn" style="display:none" onclick="jumpToSpike()"
+                    title="Seek to motion trigger point">⚡ Jump to spike</button>
                 <span class="label-status" id="labelStatus"></span>
+            </div>
+            <div class="spike-panel" id="spikePanel">
+                <div class="spike-row" id="spikeRow"></div>
+                <div class="spike-reason" id="spikeReason"></div>
+                <div class="z-timeline-wrap" id="zTimelineWrap" style="display:none">
+                    <div class="z-timeline-label">Z-Score Timeline <span style="color:#fbbf24;font-size:0.65rem;margin-left:6px">│ I</span><span style="color:#a78bfa;font-size:0.65rem;margin-left:6px">│ B</span><span style="color:#94a3b8;font-size:0.65rem;margin-left:6px">│ P</span></div>
+                    <canvas id="zTimelineCanvas"></canvas>
+                </div>
             </div>
         </div>
 
@@ -1400,6 +1687,7 @@ const webUIHTML = `<!DOCTYPE html>
         let currentPage = 1;
         let totalPages = 1;
         let totalClips = 0;
+        let zTimelineData = null;
 
         async function loadClips(camera = '', page = 1) {
             currentPage = page;
@@ -1615,7 +1903,238 @@ const webUIHTML = `<!DOCTYPE html>
             section.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
 
             syncLabelButtons(clip.label || '');
+            showSpikePanel(clip);
             displayClips(); // Refresh to show playing state
+        }
+
+        let currentSpikeSec = null;
+
+        function drawZTimeline(points, triggerMs, playheadMs) {
+            const wrap = document.getElementById('zTimelineWrap');
+            const canvas = document.getElementById('zTimelineCanvas');
+            if (!points || points.length < 2) { wrap.style.display = 'none'; return; }
+            wrap.style.display = '';
+
+            const dpr = window.devicePixelRatio || 1;
+            const cssW = canvas.offsetWidth || 400;
+            const cssH = 100;
+            canvas.width = Math.round(cssW * dpr);
+            canvas.height = Math.round(cssH * dpr);
+            canvas.style.height = cssH + 'px';
+
+            const ctx = canvas.getContext('2d');
+            ctx.scale(dpr, dpr);
+
+            const pad = { top: 8, right: 10, bottom: 26, left: 28 };
+            const W = cssW - pad.left - pad.right;
+            const H = cssH - pad.top - pad.bottom;
+
+            const maxT = points[points.length - 1].OffsetMS || 1;
+            const rawMax = Math.max(...points.map(p => p.ZScore));
+            const maxZ = Math.max(8, rawMax * 1.05);
+
+            const toX = ms => pad.left + (ms / maxT) * W;
+            const toY = z  => pad.top + H - (z / maxZ) * H;
+
+            // Background
+            ctx.fillStyle = '#0f172a';
+            ctx.fillRect(0, 0, cssW, cssH);
+
+            // Threshold colour bands
+            const y35 = toY(3.5);
+            const y6  = toY(6);
+            ctx.fillStyle = 'rgba(52,211,153,0.07)';
+            ctx.fillRect(pad.left, y35, W, pad.top + H - y35);
+            ctx.fillStyle = 'rgba(251,191,36,0.07)';
+            ctx.fillRect(pad.left, y6, W, y35 - y6);
+            ctx.fillStyle = 'rgba(248,113,113,0.07)';
+            ctx.fillRect(pad.left, pad.top, W, y6 - pad.top);
+
+            // Threshold dashed lines
+            ctx.lineWidth = 0.5;
+            ctx.setLineDash([3, 4]);
+            ctx.strokeStyle = 'rgba(52,211,153,0.35)';
+            ctx.beginPath(); ctx.moveTo(pad.left, y35); ctx.lineTo(pad.left + W, y35); ctx.stroke();
+            ctx.strokeStyle = 'rgba(251,191,36,0.35)';
+            ctx.beginPath(); ctx.moveTo(pad.left, y6);  ctx.lineTo(pad.left + W, y6);  ctx.stroke();
+            ctx.setLineDash([]);
+
+            // Y-axis labels
+            ctx.fillStyle = '#475569';
+            ctx.font = '9px monospace';
+            ctx.textAlign = 'right';
+            [0, 2, 4, 6, 8].forEach(z => {
+                if (z <= maxZ + 0.5) {
+                    ctx.fillText(z, pad.left - 3, toY(z) + 3);
+                }
+            });
+
+            // X-axis time labels — row 2 of gutter (below I-frame labels)
+            ctx.fillStyle = '#475569';
+            ctx.font = '9px monospace';
+            ctx.textAlign = 'center';
+            ctx.fillText('0s', pad.left, pad.top + H + 22);
+            ctx.fillText((maxT / 1000).toFixed(1) + 's', pad.left + W, pad.top + H + 22);
+
+            // GOP structure: draw column backgrounds (I=amber, B=purple, P=subtle).
+            // Column widths come from adjacent PTS offsets; last column fills to edge.
+            // Drawn before the z-line so the line renders on top.
+            for (let i = 0; i < points.length; i++) {
+                const pt = points[i];
+                const x0 = toX(pt.OffsetMS);
+                const x1 = i + 1 < points.length ? toX(points[i + 1].OffsetMS) : pad.left + W;
+                const colW = Math.max(1, x1 - x0);
+
+                if (pt.IsKeyframe) {
+                    // I-frame: amber fill + left border + "I" gutter label
+                    ctx.fillStyle = 'rgba(251,191,36,0.18)';
+                    ctx.fillRect(x0, pad.top, colW, H);
+                    ctx.fillStyle = 'rgba(251,191,36,0.7)';
+                    ctx.fillRect(x0, pad.top, 1, H);
+                    ctx.fillStyle = '#fbbf24';
+                    ctx.font = 'bold 7px monospace';
+                    ctx.textAlign = 'center';
+                    ctx.fillText('I', x0 + Math.min(colW / 2, 5), pad.top + H + 11);
+                } else if (pt.IsBframe) {
+                    // B-frame: violet/purple fill + left border + "B" gutter label
+                    ctx.fillStyle = 'rgba(167,139,250,0.15)';
+                    ctx.fillRect(x0, pad.top, colW, H);
+                    ctx.fillStyle = 'rgba(167,139,250,0.55)';
+                    ctx.fillRect(x0, pad.top, 1, H);
+                    ctx.fillStyle = '#a78bfa';
+                    ctx.font = 'bold 7px monospace';
+                    ctx.textAlign = 'center';
+                    ctx.fillText('B', x0 + Math.min(colW / 2, 5), pad.top + H + 11);
+                } else {
+                    // P-frame: faint alternating tint, no label (most common)
+                    if (i % 2 === 0) {
+                        ctx.fillStyle = 'rgba(148,163,184,0.04)';
+                        ctx.fillRect(x0, pad.top, colW, H);
+                    }
+                }
+            }
+
+            // Z-score line, colour-coded per segment
+            ctx.lineWidth = 1.5;
+            ctx.lineJoin = 'round';
+            for (let i = 1; i < points.length; i++) {
+                const p0 = points[i - 1], p1 = points[i];
+                const avg = (p0.ZScore + p1.ZScore) / 2;
+                ctx.strokeStyle = avg < 3.5 ? '#34d399' : avg < 6 ? '#fbbf24' : '#f87171';
+                ctx.beginPath();
+                ctx.moveTo(toX(p0.OffsetMS), toY(p0.ZScore));
+                ctx.lineTo(toX(p1.OffsetMS), toY(p1.ZScore));
+                ctx.stroke();
+            }
+
+            // Trigger offset vertical line
+            if (triggerMs > 0 && triggerMs <= maxT) {
+                const tx = toX(triggerMs);
+                ctx.strokeStyle = '#f87171';
+                ctx.lineWidth = 1.5;
+                ctx.setLineDash([3, 3]);
+                ctx.beginPath(); ctx.moveTo(tx, pad.top); ctx.lineTo(tx, pad.top + H); ctx.stroke();
+                ctx.setLineDash([]);
+                ctx.fillStyle = '#f87171';
+                ctx.font = '8px monospace';
+                ctx.textAlign = tx > cssW * 0.75 ? 'right' : 'left';
+                ctx.fillText('spike', tx + (ctx.textAlign === 'left' ? 3 : -3), pad.top + 8);
+            }
+
+            // Playhead
+            if (playheadMs !== null && playheadMs !== undefined && playheadMs >= 0 && playheadMs <= maxT) {
+                ctx.strokeStyle = 'rgba(226,232,240,0.6)';
+                ctx.lineWidth = 1;
+                ctx.beginPath();
+                ctx.moveTo(toX(playheadMs), pad.top);
+                ctx.lineTo(toX(playheadMs), pad.top + H);
+                ctx.stroke();
+            }
+        }
+
+        function zClass(val) {
+            if (val < 3.5) return 'z-ok';
+            if (val < 6)   return 'z-warn';
+            return 'z-crit';
+        }
+
+        function showSpikePanel(clip) {
+            const meta = clip.meta;
+            const panel = document.getElementById('spikePanel');
+            const row   = document.getElementById('spikeRow');
+            const reason = document.getElementById('spikeReason');
+            const jumpBtn = document.getElementById('jumpSpikeBtn');
+            const marker = document.getElementById('spikeMarker');
+
+            if (!meta) {
+                panel.classList.remove('visible');
+                jumpBtn.style.display = 'none';
+                marker.style.display = 'none';
+                currentSpikeSec = null;
+                return;
+            }
+
+            currentSpikeSec = meta.trigger_offset_ms / 1000;
+
+            const stat = (label, value) =>
+                ` + "`<div class=\"spike-stat\"><div class=\"spike-stat-label\">${label}</div><div class=\"spike-stat-value\">${value}</div></div>`" + `;
+            const zVal = meta.z_score.toFixed(2);
+            const zCls = zClass(meta.z_score);
+
+            row.innerHTML =
+                stat('Z-Score', ` + "`<span class=\"${zCls}\">${zVal}</span>`" + `) +
+                stat('BPF Slow', fmtBPF(meta.bpf_slow)) +
+                stat('BPF EWMA', fmtBPF(meta.bpf_ewma)) +
+                stat('Intra Ratio', meta.intra_ratio.toFixed(3)) +
+                stat('Pre-roll', ` + "`${meta.pre_roll_seconds}s`" + `) +
+                stat('Post-roll', ` + "`${meta.post_roll_seconds}s`" + `) +
+                (meta.clip_duration_ms ? stat('Duration', ` + "`${(meta.clip_duration_ms/1000).toFixed(1)}s`" + `) : '') +
+                stat('Codec', ` + "`${meta.codec} @ ${meta.fps.toFixed(1)} fps`" + `);
+
+            reason.textContent = meta.reason ? ` + "`Reason: ${meta.reason}`" + ` : '';
+            panel.classList.add('visible');
+            jumpBtn.style.display = '';
+
+            // Fetch and render z-score timeline if available.
+            zTimelineData = null;
+            document.getElementById('zTimelineWrap').style.display = 'none';
+            if (meta.z_timeline_url) {
+                fetch(meta.z_timeline_url)
+                    .then(r => r.ok ? r.json() : null)
+                    .then(pts => {
+                        if (pts && pts.length >= 2) {
+                            zTimelineData = pts;
+                            drawZTimeline(pts, meta.trigger_offset_ms, null);
+                        }
+                    })
+                    .catch(() => {});
+            }
+
+            // Position the spike marker on the video element.
+            // The marker is placed at trigger_offset_ms / clip_duration_ms * 100%.
+            // We use a rAF loop to update once duration is known.
+            marker.style.display = 'none';
+            const player = document.getElementById('videoPlayer');
+            function tryPositionMarker() {
+                if (!player.duration || !meta.trigger_offset_ms) return;
+                const pct = (meta.trigger_offset_ms / 1000) / player.duration * 100;
+                if (pct > 0 && pct < 100) {
+                    // Height covers just the native controls progress bar area (~4px from bottom).
+                    // We can't reach inside the shadow DOM, so overlay across the full player bottom.
+                    marker.style.left = pct + '%';
+                    marker.style.height = '100%';
+                    marker.style.display = 'block';
+                }
+            }
+            player.addEventListener('loadedmetadata', tryPositionMarker, { once: true });
+            tryPositionMarker();
+        }
+
+        function jumpToSpike() {
+            if (currentSpikeSec === null) return;
+            const player = document.getElementById('videoPlayer');
+            player.currentTime = currentSpikeSec;
+            player.play().catch(() => {});
         }
 
         function syncLabelButtons(label) {
@@ -1780,15 +2299,115 @@ const webUIHTML = `<!DOCTYPE html>
             loadClips(document.getElementById('cameraFilter').value, 1);
         });
 
+        let signalPanelOpen = true;
+        function toggleSignalPanel() {
+            signalPanelOpen = !signalPanelOpen;
+            document.getElementById('signalPanel').style.display = signalPanelOpen ? '' : 'none';
+            document.getElementById('signalToggle').textContent = signalPanelOpen ? '▼' : '▶';
+        }
+
+        function esc(str) {
+            return String(str)
+                .replace(/&/g, '&amp;')
+                .replace(/</g, '&lt;')
+                .replace(/>/g, '&gt;')
+                .replace(/"/g, '&quot;')
+                .replace(/'/g, '&#39;');
+        }
+
+        function zChip(val) {
+            if (val === null || val === undefined) return '—';
+            const cls = val < 3.5 ? 'z-ok' : val < 6 ? 'z-warn' : 'z-crit';
+            return ` + "`<span class=\"z-chip ${cls}\">${val.toFixed(2)}</span>`" + `;
+        }
+
+        function fmtBPF(val) {
+            if (!val) return '—';
+            if (val >= 1e6) return (val / 1e6).toFixed(2) + ' MB/f';
+            if (val >= 1e3) return (val / 1e3).toFixed(1) + ' kB/f';
+            return val.toFixed(0) + ' B/f';
+        }
+
+        function fmtAgo(tsStr) {
+            if (!tsStr) return '—';
+            const diff = Date.now() - new Date(tsStr).getTime();
+            const m = Math.floor(diff / 60000);
+            if (m < 1) return 'just now';
+            if (m < 60) return m + 'm ago';
+            const h = Math.floor(m / 60);
+            if (h < 24) return h + 'h ago';
+            return Math.floor(h / 24) + 'd ago';
+        }
+
+        async function loadSignalStats() {
+            try {
+                const resp = await fetch('/api/cameras/stats');
+                if (!resp.ok) return;
+                const data = await resp.json();
+                const cameras = data.cameras || [];
+
+                const tbody = document.getElementById('signalBody');
+                if (cameras.length === 0) {
+                    tbody.innerHTML = '<tr><td colspan="9" style="text-align:center;color:#64748b;padding:20px">No cameras registered</td></tr>';
+                    return;
+                }
+
+                tbody.innerHTML = cameras.map(c => {
+                    if (c.event_count_24h === 0) {
+                        return ` + "`" + `<tr>
+                            <td class="cam-name-cell">${esc(c.name)}</td>
+                            <td>0</td>
+                            <td class="no-data-cell" colspan="7">no events in 24 h</td>
+                        </tr>` + "`" + `;
+                    }
+                    return ` + "`" + `<tr>
+                        <td class="cam-name-cell">${esc(c.name)}</td>
+                        <td>${c.event_count_24h}</td>
+                        <td>${fmtAgo(c.last_event_ts)}</td>
+                        <td>${zChip(c.z_score_last)}</td>
+                        <td>${c.z_score_avg.toFixed(2)}</td>
+                        <td>${zChip(c.z_score_max)}</td>
+                        <td>${fmtBPF(c.bpf_slow_last)}</td>
+                        <td>${fmtBPF(c.bpf_ewma_last)}</td>
+                        <td>${c.intra_ratio_last.toFixed(3)}</td>
+                    </tr>` + "`" + `;
+                }).join('');
+            } catch (_) {
+                // non-fatal
+            }
+        }
+
+        // Z-timeline: live playhead tracking and click-to-seek.
+        (function() {
+            const player = document.getElementById('videoPlayer');
+            player.addEventListener('timeupdate', function() {
+                if (!zTimelineData || !currentClip || !currentClip.meta) return;
+                drawZTimeline(zTimelineData, currentClip.meta.trigger_offset_ms, player.currentTime * 1000);
+            });
+            document.getElementById('zTimelineCanvas').addEventListener('click', function(e) {
+                if (!zTimelineData || zTimelineData.length < 2) return;
+                const rect = this.getBoundingClientRect();
+                const padLeft = 28, padRight = 10;
+                const x = e.clientX - rect.left - padLeft;
+                const w = rect.width - padLeft - padRight;
+                if (x < 0 || x > w) return;
+                const maxT = zTimelineData[zTimelineData.length - 1].OffsetMS;
+                player.currentTime = (x / w) * maxT / 1000;
+                player.play().catch(() => {});
+            });
+        })();
+
         // Initial load
         loadClips();
         loadSystemStats();
+        loadSignalStats();
 
         // Auto-refresh every 30 seconds, stay on current page
         setInterval(() => {
             const camera = document.getElementById('cameraFilter').value;
             loadClips(camera, currentPage);
             loadSystemStats();
+            loadSignalStats();
         }, 30000);
     </script>
 </body>

@@ -111,6 +111,11 @@ typedef struct {
     size_t                  au_bytes;
     bool                    au_has_kf;
     bool                    au_has_intra;
+
+    /* Z-score from the most recently completed access unit.
+     * Stamped onto each incoming NAL so the ring buffer carries
+     * per-frame signal data for clip timeline extraction. */
+    float                   pending_z_score;
 } cam_nal_ctx_t;
 
 /* ---------------------------------------------------------------------------
@@ -190,6 +195,7 @@ static void push_nal_to_ring(cam_nal_ctx_t *ctx,
     rec.flags     = flags;
     rec.cam_id    = ctx->cfg->cam_id;
     rec.length    = (uint32_t)nal_len;
+    rec.z_score   = ctx->pending_z_score; /* z-score from previous AU */
 
     struct timespec ts;
     clock_gettime(CLOCK_MONOTONIC, &ts);
@@ -212,7 +218,14 @@ static void push_nal_to_ring(cam_nal_ctx_t *ctx,
             in.byte_count        = ctx->au_bytes;
             in.is_keyframe       = ctx->au_has_kf;
             in.is_intra          = ctx->au_has_intra;
-            in.intra_ratio_proxy = ctx->au_has_intra ? 2.0 : 0.5;
+            /* intra_ratio_proxy: ratio of this AU's bytes to the slow EWMA.
+             * Values > 1.0 indicate an access unit larger than the background
+             * baseline (intra-heavy or keyframe). Guard against div/0. */
+            {
+                double denom = ctx->insp_state.bpf_slow > 0.0
+                               ? ctx->insp_state.bpf_slow : 100.0;
+                in.intra_ratio_proxy = (double)ctx->au_bytes / denom;
+            }
 
             emd_inspector_result_t result;
             bool fired = emd_inspector_process(&ctx->insp_state,
@@ -253,6 +266,10 @@ static void push_nal_to_ring(cam_nal_ctx_t *ctx,
                     ctx->event_cb(ctx->event_ctx, &ev);
                 }
             }
+
+            /* Always update pending_z_score so ring buffer NALs carry
+             * per-AU signal data for clip timeline extraction. */
+            ctx->pending_z_score = (float)result.z_score;
 
             /* Stats sampling */
             ctx->stats_frame_count++;
@@ -302,6 +319,21 @@ static void h264_nal_cb(const uint8_t *nal, size_t len,
     if (nal_type == 5)              flags |= EMD_NAL_KEYFRAME;
     if (nal_type == 7 || nal_type == 8) flags |= EMD_NAL_PARAMSET;
 
+    /* Detect B-slice (H.264 §7.4.3): strip emulation-prevention bytes before
+     * Exp-Golomb parsing; 0x000003 in the NAL payload would shift bit offsets
+     * and produce a wrong slice_type value without this removal. */
+    if (nal_type == 1 && len >= 2) {
+        uint8_t rbsp[32];
+        size_t rbsp_len = emd_h264_remove_emulation(nal + 1, len - 1,
+                                                    rbsp, sizeof(rbsp));
+        emd_bitreader_t br;
+        emd_bitreader_init(&br, rbsp, rbsp_len);
+        (void)emd_br_read_ue(&br);           /* first_mb_in_slice */
+        uint32_t st = emd_br_read_ue(&br);   /* slice_type 0-9 */
+        if (!emd_br_eof(&br) && (st % 5u) == 1u)
+            flags |= EMD_NAL_BFRAME;
+    }
+
     push_nal_to_ring(s->nal_ctx, nal, len, (uint64_t)pts, nal_type, flags);
 }
 
@@ -326,6 +358,24 @@ static void h265_nal_cb(const uint8_t *nal, size_t len,
         flags |= EMD_NAL_KEYFRAME;
     if (nal_type == 32 || nal_type == 33 || nal_type == 34)
         flags |= EMD_NAL_PARAMSET;
+
+    /* Detect B-slice in H.265 non-IRAP VCL NALs (type 0-9).
+     * Strip emulation-prevention bytes before Exp-Golomb parsing.
+     * slice_type 0=B, 1=P, 2=I per H.265 §7.4.7. */
+    if (nal_type <= 9u && len >= 4) {
+        uint8_t rbsp[32];
+        size_t rbsp_len = emd_h265_remove_emulation(nal + 2, len - 2,
+                                                    rbsp, sizeof(rbsp));
+        emd_bitreader_t br;
+        emd_bitreader_init(&br, rbsp, rbsp_len);
+        int first_flag = emd_br_read_bit(&br);   /* first_slice_segment_in_pic_flag */
+        if (first_flag && !emd_br_eof(&br)) {
+            (void)emd_br_read_ue(&br);           /* slice_pic_parameter_set_id */
+            uint32_t st = emd_br_read_ue(&br);   /* slice_type: 0=B, 1=P, 2=I */
+            if (!emd_br_eof(&br) && st == 0u)
+                flags |= EMD_NAL_BFRAME;
+        }
+    }
 
     push_nal_to_ring(s->nal_ctx, nal, len, (uint64_t)pts, nal_type, flags);
 }
@@ -636,7 +686,8 @@ int emd_cam_record(emd_cam_t *cam,
         }
     }
 
-    /* Write all NALs from the snapshot */
+    /* Write all NALs from the snapshot, tracking actual last PTS written */
+    uint64_t last_pts = first_pts;
     for (uint32_t i = 0; i < snap.count; i++) {
         const emd_nal_record_t *nal = &snap.records[i];
         const uint8_t *data = emd_ringbuf_snap_data(&snap, i);
@@ -651,6 +702,7 @@ int emd_cam_record(emd_cam_t *cam,
             if (errbuf) snprintf(errbuf, errbuf_len, "mux write failed");
             return -2;
         }
+        last_pts = nal->pts_90khz;
     }
 
     if (mux->close(mux_ctx) < 0) {
@@ -659,7 +711,7 @@ int emd_cam_record(emd_cam_t *cam,
         return -2;
     }
 
-    /* Fill header */
+    /* Fill header — duration from actual PTS span written, not requested range */
     memset(hdr_out, 0, sizeof(*hdr_out));
     strncpy(hdr_out->cam_id_str, cam->cfg.name, sizeof(hdr_out->cam_id_str) - 1);
     strncpy(hdr_out->container, req->container ? req->container : "mpegts",
@@ -667,7 +719,61 @@ int emd_cam_record(emd_cam_t *cam,
     strncpy(hdr_out->codec, cam->nal_ctx.codec == 1 ? "h264" : "h265",
             sizeof(hdr_out->codec) - 1);
     strncpy(hdr_out->path, req->out_path, sizeof(hdr_out->path) - 1);
-    hdr_out->duration_ms = (to_pts_90khz - from_pts_90khz) / 90;
+    hdr_out->duration_ms = (last_pts > first_pts) ? (last_pts - first_pts) / 90 : 0;
+    /* pre_roll_ms: distance from actual clip start (first_pts) to the trigger
+     * frame.  This can exceed pre_roll_seconds*1000 when emd_ringbuf_snapshot
+     * widens the clip backwards to the nearest IDR.  Using the actual value
+     * avoids misaligning the spike marker in the UI timeline. */
+    if (req->trigger_pts_90khz > 0 && req->trigger_pts_90khz >= first_pts) {
+        hdr_out->pre_roll_ms = (req->trigger_pts_90khz - first_pts) / 90u;
+    }
+
+    /* Extract per-AU z-score timeline if the caller provided a buffer.
+     * One entry per unique PTS (deduplicated), up to z_buf_count entries. */
+    if (req->z_buf && req->z_buf_count > 0) {
+        uint32_t zn = 0;
+        uint64_t last_z_pts = UINT64_MAX;
+        for (uint32_t i = 0; i < snap.count && zn < req->z_buf_count; i++) {
+            const emd_nal_record_t *nal = &snap.records[i];
+            if (nal->pts_90khz == last_z_pts) {
+                /* Same AU: accumulate flags and keep the latest non-zero
+                 * z_score.  SPS/PPS NALs arrive before the IDR NAL at the
+                 * same PTS; B-slice NALs may follow other NAL types — always
+                 * OR flags and prefer the most recent z_score. */
+                if (nal->flags & EMD_NAL_KEYFRAME)
+                    req->z_buf[zn - 1].is_keyframe = 1u;
+                if (nal->flags & EMD_NAL_BFRAME)
+                    req->z_buf[zn - 1].is_bframe   = 1u;
+                if (nal->z_score != 0.0f)
+                    req->z_buf[zn - 1].z_score = nal->z_score;
+                continue;
+            }
+            req->z_buf[zn].offset_ms   = (uint32_t)((nal->pts_90khz - first_pts) / 90u);
+            req->z_buf[zn].z_score     = nal->z_score;
+            req->z_buf[zn].is_keyframe = (nal->flags & EMD_NAL_KEYFRAME) ? 1u : 0u;
+            req->z_buf[zn].is_bframe   = (nal->flags & EMD_NAL_BFRAME)   ? 1u : 0u;
+            last_z_pts = nal->pts_90khz;
+            zn++;
+        }
+
+        /* Correct the one-AU lag: z_score on each NAL record is the
+         * inspector's *pending* score, which was computed from the PREVIOUS
+         * access unit.  Shift scores backward by one slot so each z-point
+         * reflects the AU that actually produced the score.  The keyframe
+         * flag stays in place — it is correctly set for the AU that contains
+         * the IDR NAL, so after the shift the spike and the keyframe marker
+         * will be aligned. */
+        if (zn > 1) {
+            for (uint32_t i = 0; i < zn - 1u; i++) {
+                req->z_buf[i].z_score = req->z_buf[i + 1u].z_score;
+            }
+            req->z_buf[zn - 1u].z_score = 0.0f;
+        }
+
+        if (req->z_out_count) *req->z_out_count = zn;
+    } else if (req->z_out_count) {
+        *req->z_out_count = 0;
+    }
 
     emd_ringbuf_snapshot_release(&snap);
     return 0;

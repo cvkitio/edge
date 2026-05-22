@@ -56,13 +56,25 @@ the resulting config to the edge agent with a 15-minute canary.`,
 func scanCmd() *cobra.Command {
 	var (
 		agentURL string
+		natsURL  string
+		site     string
 		camera   string
 		since    string
 		out      string
 	)
 	cmd := &cobra.Command{
 		Use:   "scan",
-		Short: "Pull raw event history from the edge agent event log",
+		Short: "Pull raw event history from NATS JetStream (or edge agent HTTP as fallback)",
+		Long: `scan replays historical events for a camera from NATS JetStream.
+It uses an ordered ephemeral consumer so no durable state is created.
+Falls back to the edge agent HTTP event log when --nats is not provided.
+
+Examples:
+  # NATS (preferred — gets all fields including clip_url, z_timeline_url)
+  cvkit-autotune scan --nats nats://emd-agent.au01-0.internal:4222 --site au01-0 --camera axis_81_1 --since 7d
+
+  # HTTP fallback
+  cvkit-autotune scan --agent http://emd-agent.au01-0.internal:8080 --camera axis_81_1 --since 7d`,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			ctx := cmd.Context()
 
@@ -70,16 +82,38 @@ func scanCmd() *cobra.Command {
 			if err != nil {
 				return fmt.Errorf("--since: %w", err)
 			}
+			sinceTime := time.Now().Add(-dur)
 
-			client := edge.New(agentURL)
-			slog.Info("scanning events", "camera", camera, "since", since)
+			var events []edge.RawEvent
 
-			events, err := client.GetEvents(ctx, camera, edge.EventsOptions{
-				From: time.Now().Add(-dur),
-				To:   time.Now(),
-			})
-			if err != nil {
-				return fmt.Errorf("scan: %w", err)
+			if natsURL != "" {
+				if camera == "" {
+					return fmt.Errorf("scan: --camera is required with --nats")
+				}
+				if site == "" {
+					return fmt.Errorf("scan: --site is required with --nats")
+				}
+				slog.Info("scanning events from NATS", "site", site, "camera", camera, "since", since)
+				events, err = edge.ScanFromNATS(natsURL, site, camera, sinceTime, 0)
+				if err != nil {
+					return fmt.Errorf("scan: %w", err)
+				}
+			} else if agentURL != "" {
+				if camera == "" {
+					return fmt.Errorf("scan: --camera is required with --agent")
+				}
+				_ = ctx
+				client := edge.New(agentURL)
+				slog.Info("scanning events from HTTP", "camera", camera, "since", since)
+				events, err = client.GetEvents(ctx, camera, edge.EventsOptions{
+					From: sinceTime,
+					To:   time.Now(),
+				})
+				if err != nil {
+					return fmt.Errorf("scan: %w", err)
+				}
+			} else {
+				return fmt.Errorf("scan: provide --nats (and --site) or --agent")
 			}
 
 			slog.Info("fetched events", "count", len(events))
@@ -104,11 +138,12 @@ func scanCmd() *cobra.Command {
 			return nil
 		},
 	}
-	cmd.Flags().StringVar(&agentURL, "agent", "", "Edge agent base URL (e.g. http://edge:8080) [required]")
+	cmd.Flags().StringVar(&natsURL, "nats", "", "NATS URL (e.g. nats://edge:4222) — reads from JetStream EVENTS stream")
+	cmd.Flags().StringVar(&site, "site", "", "Site/instance ID (required with --nats, e.g. au01-0)")
+	cmd.Flags().StringVar(&agentURL, "agent", "", "Edge agent base URL (e.g. http://edge:8080) — HTTP fallback")
 	cmd.Flags().StringVar(&camera, "camera", "", "Camera name [required]")
 	cmd.Flags().StringVar(&since, "since", "7d", "History window (e.g. 24h, 7d)")
 	cmd.Flags().StringVar(&out, "out", "", "Output file path (default: stdout)")
-	_ = cmd.MarkFlagRequired("agent")
 	_ = cmd.MarkFlagRequired("camera")
 	return cmd
 }
@@ -161,9 +196,23 @@ func searchCmd() *cobra.Command {
 
 			slog.Info("loaded events for search", "count", len(rawEvents))
 
-			// Auto-label: events with z_score > 3.0 * 1.5 are probably FP on static cameras.
-			// In production the post-processor labels them; this is the fallback.
-			labelled := autoLabel(rawEvents)
+			// Fetch operator labels from the agent clip library.  When the agent URL
+			// is provided (even with --events), operator TP/FP labels applied via
+			// the UI take precedence over the auto-labeling heuristic.
+			var operatorLabels map[string]string
+			if agentURL != "" && camera != "" {
+				client := edge.New(agentURL)
+				lbls, err := client.GetClipLabels(ctx, camera)
+				if err != nil {
+					slog.Warn("could not fetch operator clip labels, using heuristic", "err", err)
+				} else {
+					operatorLabels = lbls
+					slog.Info("fetched operator labels", "count", len(operatorLabels))
+				}
+			}
+
+			// Label events: operator labels win, heuristic fills the rest.
+			labelled := autoLabel(rawEvents, operatorLabels)
 
 			// Coarse grid search
 			grid := tuner.DefaultGrid()
@@ -365,18 +414,27 @@ func parseDuration(s string) (time.Duration, error) {
 	return time.ParseDuration(s)
 }
 
-// autoLabel applies a simple heuristic: events that look like static-camera FPs
-// (very low byte count relative to z-score) are labelled FP; everything else TP.
-// This is the fallback when the post-processor has not yet labelled events.
-func autoLabel(events []edge.RawEvent) []tuner.LabelledEvent {
+// autoLabel labels events for grid search.  Operator labels (from the UI clip
+// browser) take precedence; the heuristic covers unlabeled events as a fallback.
+// operatorLabels maps event_id → "tp"|"fp"|"reference" and may be nil.
+func autoLabel(events []edge.RawEvent, operatorLabels map[string]string) []tuner.LabelledEvent {
 	labelled := make([]tuner.LabelledEvent, len(events))
 	for i, evt := range events {
 		label := tuner.LabelTP
-		// Heuristic: events with very low bytes but high z-score are likely FP
-		// (encoder artefact on a static scene).
-		if evt.BPFSlow > 0 && float64(evt.Bytes) < 1.5*evt.BPFSlow && evt.ZScore > 4.0 {
+
+		if lbl, ok := operatorLabels[evt.EventID]; ok {
+			// Operator-assigned label wins.
+			switch lbl {
+			case "fp":
+				label = tuner.LabelFP
+			case "tp", "reference":
+				label = tuner.LabelTP
+			}
+		} else if evt.BPFSlow > 0 && float64(evt.Bytes) < 1.5*evt.BPFSlow && evt.ZScore > 4.0 {
+			// Heuristic: very low bytes + high z-score → encoder artefact on a static scene.
 			label = tuner.LabelFP
 		}
+
 		labelled[i] = tuner.LabelledEvent{Event: evt, Label: label}
 	}
 	return labelled

@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"encoding/json"
 	"fmt"
 	"log"
 	"os"
@@ -10,7 +11,38 @@ import (
 
 	"github.com/cvkitio/cvkit/edge/emd-agent/internal/eventlog"
 	"github.com/cvkitio/cvkit/edge/emd-agent/internal/libemd"
+	natspub "github.com/cvkitio/cvkit/edge/emd-agent/internal/nats"
 )
+
+// ClipMeta is written as a JSON sidecar alongside each recorded clip.
+// It captures the trigger statistics and timing so the UI can show where
+// the motion spike occurs in the clip timeline.
+type ClipMeta struct {
+	EventID         string             `json:"event_id"`
+	Camera          string             `json:"camera"`
+	Site            string             `json:"site"`
+	TS              time.Time          `json:"ts"`
+	ZScore          float64            `json:"z_score"`
+	BPFSlow         float64            `json:"bpf_slow"`
+	BPFEwma         float64            `json:"bpf_ewma"`
+	BPFVar          float64            `json:"bpf_var"`
+	IntraRatio      float64            `json:"intra_ratio"`
+	Bytes           uint64             `json:"bytes"`
+	Reason          string             `json:"reason"`
+	PreRollSeconds  uint32             `json:"pre_roll_seconds"`
+	PostRollSeconds uint32             `json:"post_roll_seconds"`
+	TriggerOffsetMS uint32  `json:"trigger_offset_ms"` // = pre_roll_seconds * 1000
+	ClipDurationMS  uint64  `json:"clip_duration_ms"`
+	ClipURL         string  `json:"clip_url,omitempty"`
+	ZTimelineURL    string  `json:"z_timeline_url,omitempty"`
+	Codec           string  `json:"codec"`
+	FPS             float64 `json:"fps"`
+}
+
+// clipMetaPath returns the sidecar path for a clip file.
+func clipMetaPath(clipFilePath string) string {
+	return clipFilePath + ".meta.json"
+}
 
 // RecorderWorker handles clip recording for motion events.
 type RecorderWorker struct {
@@ -19,17 +51,19 @@ type RecorderWorker struct {
 	camerasMux sync.RWMutex
 	eventCh    <-chan libemd.Event
 	eventLog   *eventlog.Writer
-	ctx        chan struct{} // for shutdown
+	publisher  *natspub.Publisher // nil = NATS disabled
+	ctx        chan struct{}       // for shutdown
 }
 
 // NewRecorderWorker creates a new recorder worker.
-func NewRecorderWorker(cfg *Config, eventCh <-chan libemd.Event, evLog *eventlog.Writer) *RecorderWorker {
+func NewRecorderWorker(cfg *Config, eventCh <-chan libemd.Event, evLog *eventlog.Writer, pub *natspub.Publisher) *RecorderWorker {
 	return &RecorderWorker{
-		cfg:      cfg,
-		cameras:  make(map[string]*libemd.Camera),
-		eventCh:  eventCh,
-		eventLog: evLog,
-		ctx:      make(chan struct{}),
+		cfg:       cfg,
+		cameras:   make(map[string]*libemd.Camera),
+		eventCh:   eventCh,
+		eventLog:  evLog,
+		publisher: pub,
+		ctx:       make(chan struct{}),
 	}
 }
 
@@ -119,6 +153,14 @@ func toLogEvent(evt libemd.Event, instanceID string) eventlog.Event {
 
 // recordClip records a clip for the given event.
 func (r *RecorderWorker) recordClip(evt libemd.Event) {
+	// Wait for post-roll data to accumulate in the ring buffer before recording.
+	// The C library sets PostRollPTS = event_pts + post_roll_seconds*90kHz at the
+	// moment the event fires, so without this sleep the ring buffer won't yet contain
+	// the post-roll frames and the clip would be truncated to just pre-roll + event.
+	if camCfg, ok := r.cfg.Cameras[evt.CamName]; ok && camCfg.PostRollSeconds > 0 {
+		time.Sleep(time.Duration(camCfg.PostRollSeconds) * time.Second)
+	}
+
 	r.camerasMux.RLock()
 	cam, ok := r.cameras[evt.CamName]
 	r.camerasMux.RUnlock()
@@ -158,16 +200,30 @@ func (r *RecorderWorker) recordClip(evt libemd.Event) {
 		fsyncPolicy = 2
 	}
 
+	// Estimate z-buf capacity: pre+post roll at 30fps + 20% headroom
+	preRollSec := uint32(0)
+	postRollSec := uint32(0)
+	if camCfg, ok := r.cfg.Cameras[evt.CamName]; ok {
+		preRollSec = camCfg.PreRollSeconds
+		postRollSec = camCfg.PostRollSeconds
+	}
+	zBufSize := int((preRollSec+postRollSec)*30) + 60
+
 	// Create clip request
 	clipReq := &libemd.ClipRequest{
 		Container:   r.cfg.Recording.Container,
 		OutPath:     destPath,
 		FsyncPolicy: fsyncPolicy,
+		ZBufSize:    zBufSize,
+		// TriggerPTS lets libemd compute pre_roll_ms from the actual clip
+		// start (first_pts), which may differ from fromPTS when the snapshot
+		// is widened backwards to the nearest IDR.
+		TriggerPTS: evt.StartedPTS,
 	}
 
 	// Record clip
 	startTime := time.Now()
-	hdr, err := cam.Record(fromPTS, toPTS, clipReq)
+	hdr, zTimeline, err := cam.Record(fromPTS, toPTS, clipReq)
 	duration := time.Since(startTime)
 
 	if err != nil {
@@ -177,15 +233,116 @@ func (r *RecorderWorker) recordClip(evt libemd.Event) {
 	}
 
 	// Log successful recording
-	log.Printf("CLIP: created %s size=%dMB duration=%.1fs z=%.2f (recorded in %.1fs)",
+	log.Printf("CLIP: created %s size=%dMB duration=%.1fs z=%.2f (recorded in %.1fs, z_points=%d)",
 		filepath.Base(destPath),
 		hdr.SizeBytes/1024/1024,
 		float64(hdr.DurationMS)/1000.0,
 		parseZScore(evt.Reason),
-		duration.Seconds())
+		duration.Seconds(),
+		len(zTimeline))
 
-	// TODO: Publish clip metadata to NATS/MQTT
+	// Resolve pre/post roll from per-camera config.
+	codecStr := "h264"
+	if evt.Codec == 2 {
+		codecStr = "h265"
+	}
+
+	// Build clip and timeline URLs (empty if public_url not configured).
+	base := filepath.Base(destPath)
+	ext := filepath.Ext(base)
+	baseNoExt := base[:len(base)-len(ext)]
+	clipURL := ""
+	zTimelineURL := ""
+	if r.cfg.Runtime.PublicURL != "" {
+		clipURL = r.cfg.Runtime.PublicURL + "/api/clips/" + evt.CamName + "/" + baseNoExt + ".m3u8"
+		zTimelineURL = r.cfg.Runtime.PublicURL + "/api/clips/" + evt.CamName + "/" + baseNoExt + ".z.json"
+	}
+
+	// Write z-score timeline as a separate .z.json file so consumers can
+	// fetch it on demand without bloating the NATS event payload.
+	zJSONPath := filepath.Join(filepath.Dir(destPath), baseNoExt+".z.json")
+	if len(zTimeline) > 0 {
+		if zb, err := json.Marshal(zTimeline); err == nil {
+			_ = os.WriteFile(zJSONPath, zb, 0640)
+		}
+	}
+
+	// Write clip metadata sidecar.
+	meta := ClipMeta{
+		EventID:         evt.ID,
+		Camera:          evt.CamName,
+		Site:            r.cfg.Agent.InstanceID,
+		TS:              evt.StartedTime,
+		ZScore:          evt.ZScore,
+		BPFSlow:         evt.BPFSlow,
+		BPFEwma:         evt.BPFEwma,
+		BPFVar:          evt.BPFVar,
+		IntraRatio:      evt.IntraRatio,
+		Bytes:           evt.Bytes,
+		Reason:          evt.Reason,
+		PreRollSeconds:  preRollSec,
+		PostRollSeconds: postRollSec,
+		TriggerOffsetMS: triggerOffsetMS(hdr.PreRollMS, preRollSec),
+		ClipDurationMS:  hdr.DurationMS,
+		ClipURL:         clipURL,
+		ZTimelineURL:    zTimelineURL,
+		Codec:           codecStr,
+		FPS:             evt.FPS,
+	}
+	if mb, err := json.Marshal(meta); err == nil {
+		_ = os.WriteFile(clipMetaPath(destPath), mb, 0640)
+	}
+
+	// Publish to NATS JetStream (non-blocking on failure).
+	if r.publisher != nil {
+		natsEvt := natspub.Event{
+			EventID:         evt.ID,
+			Site:            r.cfg.Agent.InstanceID,
+			Camera:          evt.CamName,
+			CamID:           evt.CamID,
+			Ts:              evt.StartedTime,
+			TsMonoNS:        evt.StartedMonoNS,
+			Type:            evt.Type.String(),
+			ZScore:          evt.ZScore,
+			IntraRatio:      evt.IntraRatio,
+			Bytes:           evt.Bytes,
+			BPFSlow:         evt.BPFSlow,
+			BPFEwma:         evt.BPFEwma,
+			BPFVar:          evt.BPFVar,
+			SinceKF:         evt.SinceKF,
+			Reason:          evt.Reason,
+			FSMBefore:       evt.FSMBefore,
+			FSMAfter:        evt.FSMAfter,
+			PTSStart:        evt.PreRollPTS,
+			PTSEnd:          evt.PostRollPTS,
+			Codec:           meta.Codec,
+			FPS:             evt.FPS,
+			ClipID:          evt.ID,
+			ClipURL:         clipURL,
+			ZTimelineURL:    zTimelineURL,
+			TriggerOffsetMS: meta.TriggerOffsetMS,
+			TargetClassMask: evt.TargetClassMask,
+			AgentVersion:    Version,
+		}
+		if err := r.publisher.Publish(natsEvt); err != nil {
+			log.Printf("NATS: publish failed for %s event %s: %v", evt.CamName, evt.ID, err)
+		} else {
+			log.Printf("NATS: published event %s for %s z_timeline_url=%s", evt.ID[:8], evt.CamName, zTimelineURL)
+		}
+	}
+
 	// TODO: Queue for S3 upload
+}
+
+// triggerOffsetMS returns the trigger offset into a clip in milliseconds.
+// It prefers the actual pre_roll_ms from libemd (which accounts for the
+// snapshot being widened backwards to the nearest IDR keyframe), falling
+// back to pre_roll_seconds*1000 for older libemd builds that leave it zero.
+func triggerOffsetMS(preRollMS uint64, preRollSec uint32) uint32 {
+	if preRollMS > 0 {
+		return uint32(preRollMS)
+	}
+	return preRollSec * 1000
 }
 
 // parseZScore extracts z-score from event reason string.

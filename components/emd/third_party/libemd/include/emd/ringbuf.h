@@ -15,6 +15,7 @@ extern "C" {
 #define EMD_NAL_KEYFRAME  0x01u
 #define EMD_NAL_PARAMSET  0x02u
 #define EMD_NAL_LOST      0x04u  /* synthetic loss record */
+#define EMD_NAL_BFRAME    0x08u  /* B-slice (parsed from slice_type in RBSP) */
 
 /* Record describing one NAL unit in the ring */
 typedef struct {
@@ -22,6 +23,7 @@ typedef struct {
     uint64_t mono_ns;     /* CLOCK_MONOTONIC at receipt */
     uint32_t offset;      /* byte offset into backing data ring */
     uint32_t length;      /* byte length */
+    float    z_score;     /* inspector z-score at this access unit (0 if not yet computed) */
     uint8_t  nal_type;    /* codec-specific NAL type byte */
     uint8_t  flags;       /* EMD_NAL_KEYFRAME | EMD_NAL_PARAMSET | EMD_NAL_LOST */
     uint16_t cam_id;

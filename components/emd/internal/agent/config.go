@@ -11,10 +11,17 @@ import (
 // Config represents the agent configuration file.
 type Config struct {
 	Agent     AgentConfig              `toml:"agent"`
+	NATS      NATSConfig               `toml:"nats"`
 	Runtime   RuntimeConfig            `toml:"runtime"`
 	Recording RecordingConfig          `toml:"recording"`
 	Disk      DiskConfig               `toml:"disk"`
 	Cameras   map[string]CameraConfig  `toml:"cameras"`
+}
+
+// NATSConfig holds NATS connection configuration.
+// URL may be overridden by the EMD_NATS_URL environment variable.
+type NATSConfig struct {
+	URL string `toml:"url"` // empty = NATS disabled
 }
 
 type AgentConfig struct {
@@ -29,6 +36,10 @@ type RuntimeConfig struct {
 	ClipRoot      string `toml:"clip_root"`
 	InflightRoot  string `toml:"inflight_root"`
 	EventLogRoot  string `toml:"event_log_root"` // default: <clip_root>/../eventlog
+	// PublicURL is the base URL of this agent as reachable by downstream services.
+	// Used to build clip_url in NATS events, e.g. "https://emd-agent.au01-0.dametech.net".
+	// If empty, clip_url is omitted from NATS events.
+	PublicURL     string `toml:"public_url"`
 }
 
 type RecordingConfig struct {
@@ -68,6 +79,11 @@ func LoadConfig(path string) (*Config, error) {
 	var cfg Config
 	if err := toml.Unmarshal(data, &cfg); err != nil {
 		return nil, fmt.Errorf("parse config: %w", err)
+	}
+
+	// EMD_NATS_URL env var overrides [nats].url from the config file.
+	if v := os.Getenv("EMD_NATS_URL"); v != "" {
+		cfg.NATS.URL = v
 	}
 
 	return &cfg, nil
