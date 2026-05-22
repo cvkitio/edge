@@ -687,6 +687,13 @@ int emd_cam_record(emd_cam_t *cam,
             sizeof(hdr_out->codec) - 1);
     strncpy(hdr_out->path, req->out_path, sizeof(hdr_out->path) - 1);
     hdr_out->duration_ms = (last_pts > first_pts) ? (last_pts - first_pts) / 90 : 0;
+    /* pre_roll_ms: distance from actual clip start (first_pts) to the trigger
+     * frame.  This can exceed pre_roll_seconds*1000 when emd_ringbuf_snapshot
+     * widens the clip backwards to the nearest IDR.  Using the actual value
+     * avoids misaligning the spike marker in the UI timeline. */
+    if (req->trigger_pts_90khz > 0 && req->trigger_pts_90khz >= first_pts) {
+        hdr_out->pre_roll_ms = (req->trigger_pts_90khz - first_pts) / 90u;
+    }
 
     /* Extract per-AU z-score timeline if the caller provided a buffer.
      * One entry per unique PTS (deduplicated), up to z_buf_count entries. */
@@ -695,12 +702,38 @@ int emd_cam_record(emd_cam_t *cam,
         uint64_t last_z_pts = UINT64_MAX;
         for (uint32_t i = 0; i < snap.count && zn < req->z_buf_count; i++) {
             const emd_nal_record_t *nal = &snap.records[i];
-            if (nal->pts_90khz == last_z_pts) continue; /* skip duplicate PTS NALs */
-            req->z_buf[zn].offset_ms = (uint32_t)((nal->pts_90khz - first_pts) / 90u);
-            req->z_buf[zn].z_score   = nal->z_score;
+            if (nal->pts_90khz == last_z_pts) {
+                /* Same AU: accumulate flags.  SPS/PPS NALs arrive before the
+                 * IDR NAL at the same PTS, and B-slice NALs may follow other
+                 * NAL types — always OR flags across all NALs in the AU. */
+                if (nal->flags & EMD_NAL_KEYFRAME)
+                    req->z_buf[zn - 1].is_keyframe = 1u;
+                if (nal->flags & EMD_NAL_BFRAME)
+                    req->z_buf[zn - 1].is_bframe   = 1u;
+                continue;
+            }
+            req->z_buf[zn].offset_ms   = (uint32_t)((nal->pts_90khz - first_pts) / 90u);
+            req->z_buf[zn].z_score     = nal->z_score;
+            req->z_buf[zn].is_keyframe = (nal->flags & EMD_NAL_KEYFRAME) ? 1u : 0u;
+            req->z_buf[zn].is_bframe   = (nal->flags & EMD_NAL_BFRAME)   ? 1u : 0u;
             last_z_pts = nal->pts_90khz;
             zn++;
         }
+
+        /* Correct the one-AU lag: z_score on each NAL record is the
+         * inspector's *pending* score, which was computed from the PREVIOUS
+         * access unit.  Shift scores backward by one slot so each z-point
+         * reflects the AU that actually produced the score.  The keyframe
+         * flag stays in place — it is correctly set for the AU that contains
+         * the IDR NAL, so after the shift the spike and the keyframe marker
+         * will be aligned. */
+        if (zn > 1) {
+            for (uint32_t i = 0; i < zn - 1u; i++) {
+                req->z_buf[i].z_score = req->z_buf[i + 1u].z_score;
+            }
+            req->z_buf[zn - 1u].z_score = 0.0f;
+        }
+
         if (req->z_out_count) *req->z_out_count = zn;
     } else if (req->z_out_count) {
         *req->z_out_count = 0;

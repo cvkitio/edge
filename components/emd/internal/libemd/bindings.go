@@ -172,9 +172,13 @@ type ClipHeader struct {
 
 // ZPoint is one entry in a per-frame z-score timeline.
 // OffsetMS is milliseconds from the clip start; ZScore is the inspector value.
+// IsKeyframe is true when the AU contains a keyframe (IDR/CRA) NAL.
+// IsBframe is true when the AU's slice_type is B (parsed from RBSP).
 type ZPoint struct {
-	OffsetMS uint32
-	ZScore   float32
+	OffsetMS   uint32
+	ZScore     float32
+	IsKeyframe bool
+	IsBframe   bool
 }
 
 // ClipRequest represents a clip recording request.
@@ -185,6 +189,10 @@ type ClipRequest struct {
 	// ZBufSize is the number of z-score timeline slots to allocate.
 	// Pass 0 to skip timeline extraction. Typical: pre+post roll frames (e.g. 300).
 	ZBufSize int
+	// TriggerPTS is the 90 kHz PTS of the access unit that fired the motion
+	// event. When set, libemd uses it to compute the actual pre_roll_ms in
+	// the returned ClipHeader (accounting for IDR-alignment widening).
+	TriggerPTS uint64
 }
 
 func (req *ClipRequest) toCRequest() *C.emd_clip_request_t {
@@ -204,6 +212,8 @@ func (req *ClipRequest) toCRequest() *C.emd_clip_request_t {
 		c.z_out_count = (*C.uint32_t)(C.calloc(1, C.size_t(unsafe.Sizeof(C.uint32_t(0)))))
 	}
 
+	c.trigger_pts_90khz = C.uint64_t(req.TriggerPTS)
+
 	return c
 }
 
@@ -222,8 +232,10 @@ func extractZPoints(c *C.emd_clip_request_t) []ZPoint {
 	for i := 0; i < n; i++ {
 		p := (*C.emd_z_point_t)(unsafe.Pointer(base + uintptr(i)*C.sizeof_emd_z_point_t))
 		pts[i] = ZPoint{
-			OffsetMS: uint32(p.offset_ms),
-			ZScore:   float32(p.z_score),
+			OffsetMS:   uint32(p.offset_ms),
+			ZScore:     float32(p.z_score),
+			IsKeyframe: p.is_keyframe != 0,
+			IsBframe:   p.is_bframe != 0,
 		}
 	}
 	return pts

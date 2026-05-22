@@ -215,6 +215,10 @@ func (r *RecorderWorker) recordClip(evt libemd.Event) {
 		OutPath:     destPath,
 		FsyncPolicy: fsyncPolicy,
 		ZBufSize:    zBufSize,
+		// TriggerPTS lets libemd compute pre_roll_ms from the actual clip
+		// start (first_pts), which may differ from fromPTS when the snapshot
+		// is widened backwards to the nearest IDR.
+		TriggerPTS: evt.StartedPTS,
 	}
 
 	// Record clip
@@ -278,7 +282,7 @@ func (r *RecorderWorker) recordClip(evt libemd.Event) {
 		Reason:          evt.Reason,
 		PreRollSeconds:  preRollSec,
 		PostRollSeconds: postRollSec,
-		TriggerOffsetMS: preRollSec * 1000,
+		TriggerOffsetMS: triggerOffsetMS(hdr.PreRollMS, preRollSec),
 		ClipDurationMS:  hdr.DurationMS,
 		ClipURL:         clipURL,
 		ZTimelineURL:    zTimelineURL,
@@ -328,6 +332,17 @@ func (r *RecorderWorker) recordClip(evt libemd.Event) {
 	}
 
 	// TODO: Queue for S3 upload
+}
+
+// triggerOffsetMS returns the trigger offset into a clip in milliseconds.
+// It prefers the actual pre_roll_ms from libemd (which accounts for the
+// snapshot being widened backwards to the nearest IDR keyframe), falling
+// back to pre_roll_seconds*1000 for older libemd builds that leave it zero.
+func triggerOffsetMS(preRollMS uint64, preRollSec uint32) uint32 {
+	if preRollMS > 0 {
+		return uint32(preRollMS)
+	}
+	return preRollSec * 1000
 }
 
 // parseZScore extracts z-score from event reason string.

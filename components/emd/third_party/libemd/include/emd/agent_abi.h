@@ -34,7 +34,7 @@ extern "C" {
  * ------------------------------------------------------------------------- */
 
 #define EMD_ABI_VERSION_MAJOR 1
-#define EMD_ABI_VERSION_MINOR 0
+#define EMD_ABI_VERSION_MINOR 3  /* trigger_pts_90khz in emd_clip_request_t; fixes pre_roll_ms */
 #define EMD_ABI_VERSION_PATCH 0
 
 /*
@@ -211,6 +211,10 @@ typedef struct {
     emd_z_point_t      *z_buf;        /* caller-allocated; NULL to skip */
     uint32_t            z_buf_count;  /* capacity of z_buf */
     uint32_t           *z_out_count;  /* set to actual count written (may be NULL) */
+    /* Trigger PTS used to compute hdr_out->pre_roll_ms from actual first_pts.
+     * Set to the PTS of the access unit that fired the motion event (90 kHz).
+     * If zero, pre_roll_ms is left as zero in the header. */
+    uint64_t            trigger_pts_90khz;
 } emd_clip_request_t;
 
 /*
