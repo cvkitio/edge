@@ -251,10 +251,16 @@ static void h264_nal_cb(const uint8_t *nal, size_t len,
 
     /* Detect B-slice (H.264 §7.4.3): for non-IDR slice NALs (type 1),
      * parse first_mb_in_slice (ue) then slice_type (ue) from the RBSP.
-     * slice_type % 5 == 1 → B-slice.  Safe to call on hot path: reads ≤8 bytes. */
+     * slice_type % 5 == 1 → B-slice.  Strip emulation-prevention bytes first
+     * (0x000003 sequences in the bitstream must be removed before Exp-Golomb
+     * parsing, otherwise misaligned reads produce wrong slice_type values).
+     * Safe to call on hot path: only reads ≤32 bytes from the RBSP. */
     if (nal_type == 1 && len >= 2) {
+        uint8_t rbsp[32];
+        size_t rbsp_len = emd_h264_remove_emulation(nal + 1, len - 1,
+                                                    rbsp, sizeof(rbsp));
         emd_bitreader_t br;
-        emd_bitreader_init(&br, nal + 1, len - 1);
+        emd_bitreader_init(&br, rbsp, rbsp_len);
         (void)emd_br_read_ue(&br);           /* first_mb_in_slice */
         uint32_t st = emd_br_read_ue(&br);   /* slice_type 0-9 */
         if (!emd_br_eof(&br) && (st % 5u) == 1u)
@@ -294,14 +300,19 @@ static void h265_nal_cb(const uint8_t *nal, size_t len,
      *   slice_pic_parameter_set_id      ue(v)
      *   slice_type                      ue(v)  → 0=B, 1=P, 2=I
      * Only parse when first_slice_segment_in_pic_flag=1 (avoids needing PPS for
-     * dependent_slice_segments_enabled_flag).  Covers the vast majority of frames. */
+     * dependent_slice_segments_enabled_flag).  Covers the vast majority of frames.
+     * Emulation-prevention bytes in the 2-byte NAL unit header payload must be
+     * stripped before Exp-Golomb parsing. */
     if (nal_type <= 9u && len >= 4) {
+        uint8_t rbsp[32];
+        size_t rbsp_len = emd_h265_remove_emulation(nal + 2, len - 2,
+                                                    rbsp, sizeof(rbsp));
         emd_bitreader_t br;
-        emd_bitreader_init(&br, nal + 2, len - 2);   /* skip 2-byte NAL unit header */
-        int first_flag = emd_br_read_bit(&br);        /* first_slice_segment_in_pic_flag */
+        emd_bitreader_init(&br, rbsp, rbsp_len);
+        int first_flag = emd_br_read_bit(&br);   /* first_slice_segment_in_pic_flag */
         if (first_flag && !emd_br_eof(&br)) {
-            (void)emd_br_read_ue(&br);               /* slice_pic_parameter_set_id */
-            uint32_t st = emd_br_read_ue(&br);       /* slice_type: 0=B, 1=P, 2=I */
+            (void)emd_br_read_ue(&br);           /* slice_pic_parameter_set_id */
+            uint32_t st = emd_br_read_ue(&br);   /* slice_type: 0=B, 1=P, 2=I */
             if (!emd_br_eof(&br) && st == 0u)
                 flags |= EMD_NAL_BFRAME;
         }

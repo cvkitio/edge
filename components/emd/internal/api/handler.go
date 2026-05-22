@@ -34,6 +34,10 @@ type Handler struct {
 	cpuMu     sync.Mutex
 	cpuCached float64
 	cpuAt     time.Time
+
+	diskMu    sync.Mutex
+	diskUsed  uint64
+	diskAt    time.Time
 }
 
 // NewHandler creates a new API handler.
@@ -993,17 +997,26 @@ func (h *Handler) getDiskStats() DiskStats {
 	// On local-hostpath PVCs the volume is a directory on a shared host partition,
 	// so syscall.Statfs returns the whole node's partition stats, not emd's usage.
 	// Walk the data directory to get the actual bytes emd-agent has written.
+	// The walk is cached for 30 s to avoid O(n files) disk I/O on every /api/system poll.
 	dataRoot := filepath.Dir(path)
-	var emdUsed uint64
-	_ = filepath.WalkDir(dataRoot, func(_ string, d fs.DirEntry, err error) error {
-		if err != nil || d.IsDir() {
+	h.diskMu.Lock()
+	emdUsed := h.diskUsed
+	if time.Since(h.diskAt) >= 30*time.Second {
+		var walked uint64
+		_ = filepath.WalkDir(dataRoot, func(_ string, d fs.DirEntry, err error) error {
+			if err != nil || d.IsDir() {
+				return nil
+			}
+			if info, ie := d.Info(); ie == nil {
+				walked += uint64(info.Size()) //nolint:gosec
+			}
 			return nil
-		}
-		if info, ie := d.Info(); ie == nil {
-			emdUsed += uint64(info.Size()) //nolint:gosec
-		}
-		return nil
-	})
+		})
+		h.diskUsed = walked
+		h.diskAt = time.Now()
+		emdUsed = walked
+	}
+	h.diskMu.Unlock()
 
 	var stat syscall.Statfs_t
 	if err := syscall.Statfs(path, &stat); err != nil {
@@ -2293,6 +2306,15 @@ const webUIHTML = `<!DOCTYPE html>
             document.getElementById('signalToggle').textContent = signalPanelOpen ? '▼' : '▶';
         }
 
+        function esc(str) {
+            return String(str)
+                .replace(/&/g, '&amp;')
+                .replace(/</g, '&lt;')
+                .replace(/>/g, '&gt;')
+                .replace(/"/g, '&quot;')
+                .replace(/'/g, '&#39;');
+        }
+
         function zChip(val) {
             if (val === null || val === undefined) return '—';
             const cls = val < 3.5 ? 'z-ok' : val < 6 ? 'z-warn' : 'z-crit';
@@ -2333,13 +2355,13 @@ const webUIHTML = `<!DOCTYPE html>
                 tbody.innerHTML = cameras.map(c => {
                     if (c.event_count_24h === 0) {
                         return ` + "`" + `<tr>
-                            <td class="cam-name-cell">${c.name}</td>
+                            <td class="cam-name-cell">${esc(c.name)}</td>
                             <td>0</td>
                             <td class="no-data-cell" colspan="7">no events in 24 h</td>
                         </tr>` + "`" + `;
                     }
                     return ` + "`" + `<tr>
-                        <td class="cam-name-cell">${c.name}</td>
+                        <td class="cam-name-cell">${esc(c.name)}</td>
                         <td>${c.event_count_24h}</td>
                         <td>${fmtAgo(c.last_event_ts)}</td>
                         <td>${zChip(c.z_score_last)}</td>

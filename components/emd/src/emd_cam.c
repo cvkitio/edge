@@ -319,6 +319,21 @@ static void h264_nal_cb(const uint8_t *nal, size_t len,
     if (nal_type == 5)              flags |= EMD_NAL_KEYFRAME;
     if (nal_type == 7 || nal_type == 8) flags |= EMD_NAL_PARAMSET;
 
+    /* Detect B-slice (H.264 §7.4.3): strip emulation-prevention bytes before
+     * Exp-Golomb parsing; 0x000003 in the NAL payload would shift bit offsets
+     * and produce a wrong slice_type value without this removal. */
+    if (nal_type == 1 && len >= 2) {
+        uint8_t rbsp[32];
+        size_t rbsp_len = emd_h264_remove_emulation(nal + 1, len - 1,
+                                                    rbsp, sizeof(rbsp));
+        emd_bitreader_t br;
+        emd_bitreader_init(&br, rbsp, rbsp_len);
+        (void)emd_br_read_ue(&br);           /* first_mb_in_slice */
+        uint32_t st = emd_br_read_ue(&br);   /* slice_type 0-9 */
+        if (!emd_br_eof(&br) && (st % 5u) == 1u)
+            flags |= EMD_NAL_BFRAME;
+    }
+
     push_nal_to_ring(s->nal_ctx, nal, len, (uint64_t)pts, nal_type, flags);
 }
 
@@ -343,6 +358,24 @@ static void h265_nal_cb(const uint8_t *nal, size_t len,
         flags |= EMD_NAL_KEYFRAME;
     if (nal_type == 32 || nal_type == 33 || nal_type == 34)
         flags |= EMD_NAL_PARAMSET;
+
+    /* Detect B-slice in H.265 non-IRAP VCL NALs (type 0-9).
+     * Strip emulation-prevention bytes before Exp-Golomb parsing.
+     * slice_type 0=B, 1=P, 2=I per H.265 §7.4.7. */
+    if (nal_type <= 9u && len >= 4) {
+        uint8_t rbsp[32];
+        size_t rbsp_len = emd_h265_remove_emulation(nal + 2, len - 2,
+                                                    rbsp, sizeof(rbsp));
+        emd_bitreader_t br;
+        emd_bitreader_init(&br, rbsp, rbsp_len);
+        int first_flag = emd_br_read_bit(&br);   /* first_slice_segment_in_pic_flag */
+        if (first_flag && !emd_br_eof(&br)) {
+            (void)emd_br_read_ue(&br);           /* slice_pic_parameter_set_id */
+            uint32_t st = emd_br_read_ue(&br);   /* slice_type: 0=B, 1=P, 2=I */
+            if (!emd_br_eof(&br) && st == 0u)
+                flags |= EMD_NAL_BFRAME;
+        }
+    }
 
     push_nal_to_ring(s->nal_ctx, nal, len, (uint64_t)pts, nal_type, flags);
 }
@@ -703,13 +736,16 @@ int emd_cam_record(emd_cam_t *cam,
         for (uint32_t i = 0; i < snap.count && zn < req->z_buf_count; i++) {
             const emd_nal_record_t *nal = &snap.records[i];
             if (nal->pts_90khz == last_z_pts) {
-                /* Same AU: accumulate flags.  SPS/PPS NALs arrive before the
-                 * IDR NAL at the same PTS, and B-slice NALs may follow other
-                 * NAL types — always OR flags across all NALs in the AU. */
+                /* Same AU: accumulate flags and keep the latest non-zero
+                 * z_score.  SPS/PPS NALs arrive before the IDR NAL at the
+                 * same PTS; B-slice NALs may follow other NAL types — always
+                 * OR flags and prefer the most recent z_score. */
                 if (nal->flags & EMD_NAL_KEYFRAME)
                     req->z_buf[zn - 1].is_keyframe = 1u;
                 if (nal->flags & EMD_NAL_BFRAME)
                     req->z_buf[zn - 1].is_bframe   = 1u;
+                if (nal->z_score != 0.0f)
+                    req->z_buf[zn - 1].z_score = nal->z_score;
                 continue;
             }
             req->z_buf[zn].offset_ms   = (uint32_t)((nal->pts_90khz - first_pts) / 90u);
