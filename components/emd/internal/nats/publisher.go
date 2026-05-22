@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"sync"
 	"time"
 
 	"github.com/nats-io/nats.go"
@@ -52,26 +53,62 @@ type Event struct {
 // Publisher wraps a NATS connection and JetStream context for event publishing.
 type Publisher struct {
 	conn *nats.Conn
-	js   nats.JetStreamContext
+	mu   sync.RWMutex
+	js   nats.JetStreamContext // nil until connected
 }
 
-// New connects to NATS and returns a Publisher ready to publish events.
+// New connects to NATS and returns a Publisher.
+// With RetryOnFailedConnect the connection is attempted in the background, so
+// this never blocks even when the NATS sidecar hasn't started yet.
 // Returns nil, nil if url is empty (NATS is optional).
 func New(url string) (*Publisher, error) {
 	if url == "" {
 		return nil, nil
 	}
 
+	p := &Publisher{}
+
+	// initJetStream is called once the TCP connection is established.
+	// It obtains the JetStream context and ensures the EVENTS stream exists.
+	initJetStream := func(conn *nats.Conn) {
+		js, err := conn.JetStream()
+		if err != nil {
+			log.Printf("NATS: JetStream init failed: %v", err)
+			return
+		}
+		if _, err := js.StreamInfo("EVENTS"); err != nil {
+			_, err = js.AddStream(&nats.StreamConfig{
+				Name:     "EVENTS",
+				Subjects: []string{"events.>"},
+				Storage:  nats.FileStorage,
+			})
+			if err != nil {
+				log.Printf("NATS: create stream EVENTS: %v", err)
+				return
+			}
+			log.Printf("NATS: created stream EVENTS")
+		}
+		p.mu.Lock()
+		p.js = js
+		p.mu.Unlock()
+		log.Printf("NATS: JetStream ready")
+	}
+
 	opts := []nats.Option{
 		nats.MaxReconnects(-1),
+		nats.RetryOnFailedConnect(true),
 		nats.ReconnectWait(5 * time.Second),
 		nats.DisconnectErrHandler(func(_ *nats.Conn, err error) {
 			if err != nil {
 				log.Printf("NATS: disconnected: %v", err)
 			}
 		}),
-		nats.ReconnectHandler(func(_ *nats.Conn) {
-			log.Printf("NATS: reconnected")
+		nats.ConnectHandler(func(conn *nats.Conn) {
+			log.Printf("NATS: connected to %s", conn.ConnectedUrl())
+			initJetStream(conn)
+		}),
+		nats.ReconnectHandler(func(conn *nats.Conn) {
+			log.Printf("NATS: reconnected to %s", conn.ConnectedUrl())
 		}),
 	}
 
@@ -80,34 +117,22 @@ func New(url string) (*Publisher, error) {
 		return nil, fmt.Errorf("nats connect %s: %w", url, err)
 	}
 
-	js, err := conn.JetStream()
-	if err != nil {
-		conn.Close()
-		return nil, fmt.Errorf("nats jetstream: %w", err)
-	}
-
-	// Ensure the EVENTS stream exists; create it if it doesn't.
-	if _, err := js.StreamInfo("EVENTS"); err != nil {
-		_, err = js.AddStream(&nats.StreamConfig{
-			Name:     "EVENTS",
-			Subjects: []string{"events.>"},
-			Storage:  nats.FileStorage,
-		})
-		if err != nil {
-			conn.Close()
-			return nil, fmt.Errorf("nats create stream EVENTS: %w", err)
-		}
-		log.Printf("NATS: created stream EVENTS")
-	}
-
-	return &Publisher{conn: conn, js: js}, nil
+	p.conn = conn
+	return p, nil
 }
 
 // Publish publishes an event to events.raw.<site>.<camera> via JetStream.
-// Safe to call on a nil receiver — returns nil immediately.
+// Safe to call on a nil receiver or before JetStream is ready — returns nil
+// in both cases (events are silently dropped until the connection is up).
 func (p *Publisher) Publish(evt Event) error {
 	if p == nil {
 		return nil
+	}
+	p.mu.RLock()
+	js := p.js
+	p.mu.RUnlock()
+	if js == nil {
+		return nil // still connecting; drop silently
 	}
 
 	payload, err := json.Marshal(evt)
@@ -116,7 +141,7 @@ func (p *Publisher) Publish(evt Event) error {
 	}
 
 	subject := fmt.Sprintf("events.raw.%s.%s", evt.Site, evt.Camera)
-	if _, err := p.js.Publish(subject, payload); err != nil {
+	if _, err := js.Publish(subject, payload); err != nil {
 		return fmt.Errorf("nats publish to %s: %w", subject, err)
 	}
 

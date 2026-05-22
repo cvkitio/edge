@@ -52,12 +52,12 @@ func NewSupervisor(cfg *Config, m *metrics.Metrics) *Supervisor {
 	}
 
 	// Connect to NATS if configured (optional — nil if URL is empty).
+	// New() returns immediately even when NATS isn't up yet; the connection
+	// is established in the background and logged via ConnectHandler.
 	pub, err := natspub.New(cfg.NATS.URL)
 	if err != nil {
-		log.Printf("warning: NATS connect failed: %v (publishing disabled)", err)
+		log.Printf("warning: NATS init failed: %v (publishing disabled)", err)
 		pub = nil
-	} else if pub != nil {
-		log.Printf("NATS: connected to %s", cfg.NATS.URL)
 	}
 
 	// Create recorder worker — it is the single consumer of eventCh.
