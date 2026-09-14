@@ -19,19 +19,3 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
-
----
-
-SCOPE. This licence covers the code and the documentation in this repository.
-
-It does NOT cover manufacturer data transcribed into the catalogues, nor any
-vendor document those figures were read from. Dimensions, ratings and load data
-in `cables/cable_catalog.json` and `cable-tray-ezystrut/tray_catalogue.json`
-originate with the manufacturers named in those files. The source documents are
-not redistributed here and are not licensed to you by this grant. See
-`catalogue/sources.yaml` for each source's terms and the clause they turn on.
-
-It does NOT cover the standards. AS/NZS 3000 and AS/NZS 3008 are copyright
-Standards Australia. This repository implements published methodology and cites
-clause numbers; it does not reproduce the rating tables. See
-`cable-sizing/EXTRACTED-TABLES.md`.
