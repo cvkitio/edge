@@ -46,3 +46,15 @@ LIVE_MONITORING.md
 
 .gemini/
 gha-creds-*.json
+
+# --- Credential guards. Never commit these. ---
+.env
+.env.local
+*.pem
+*.key
+credentials
+*-adminsdk-*.json
+.DS_Store
+
+# CTest scratch output
+Testing/
