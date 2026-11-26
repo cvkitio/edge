@@ -58,3 +58,8 @@ credentials
 
 # CTest scratch output
 Testing/
+
+# ── Python ──
+__pycache__/
+.pytest_cache/
+*.egg-info/

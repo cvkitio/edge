@@ -1,0 +1,30 @@
+[Unit]
+Description=cvkit-detect: Hailo object detection -> NATS JetStream
+Wants=network-online.target
+After=network-online.target nats-server.service hailort.service
+Requires=nats-server.service
+
+[Service]
+Type=simple
+User=cvkit
+Group=cvkit
+ExecStart=/opt/cvkit/venv/bin/cvkit-detect --config /etc/cvkit/detect.toml
+Restart=always
+RestartSec=5
+TimeoutStopSec=20
+LimitNOFILE=65536
+# GStreamer registry cache lives in the service's own state dir.
+Environment=XDG_CACHE_HOME=/var/cache/cvkit-detect
+CacheDirectory=cvkit-detect
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+ReadWritePaths=/var/cache/cvkit-detect /var/lib/cvkit
+# HailoRT writes hailort.log to the working dir and ~/.hailo.
+WorkingDirectory=/var/lib/cvkit
+# The Hailo needs /dev/hailo0 (mode 0666 via Hailo's udev rule).
+DeviceAllow=/dev/hailo0 rw
+
+[Install]
+WantedBy=multi-user.target
