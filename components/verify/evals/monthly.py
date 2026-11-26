@@ -10,8 +10,8 @@ Environment:
   CVKIT_CASES          case dir (default /srv/data/cvkit/verify/cases)
   CVKIT_RESULTS        records (default /srv/data/cvkit/verify/results)
   CVKIT_PAGE_DIR       page output (default /srv/data/share/cvkitio/vision-benchmark, the tailnet share)
-  CVKIT_PUBLIC_FILE    the public copy for https://cvkit.net/vision-benchmark.html (no site name, no history;
-                       deploy/publish-site.sh uploads it). Unset: no public copy.
+  CVKIT_PUBLIC_DIR     the public report for https://cvkit.net/resources/reports/vision-benchmark/ (evals/report.py:
+                       results, method, every case image; cvkitio/infra site/publish.sh uploads it). Unset: none.
   NATS_URL             for the KV write (default nats://nats.cvkit:4222)
   TELEGRAM_*/ALERT_WEBHOOK_URL/NTFY_URL   optional: tell the admin when the pick changes or a run fails
 
@@ -32,7 +32,7 @@ from pathlib import Path
 import requests
 
 from cvkit_verify.alerts import Alerter
-from evals import publish, run
+from evals import publish, report, run
 
 log = logging.getLogger("evals.monthly")
 
@@ -76,17 +76,19 @@ def main(argv=None) -> None:
     ap.add_argument("--dry-run", action="store_true")
     a = ap.parse_args(argv)
     page_dir = Path(os.environ.get("CVKIT_PAGE_DIR", "/srv/data/share/cvkitio/vision-benchmark"))
-    public = os.environ.get("CVKIT_PUBLIC_FILE")
+    public = os.environ.get("CVKIT_PUBLIC_DIR")
+    cases_dir = Path(os.environ.get("CVKIT_CASES", "/srv/data/cvkit/verify/cases"))
     if a.publish:
         rec = json.loads(a.publish.read_text())
         print(publish.write(rec, page_dir))
         if public:
-            print(publish.write_public(rec, Path(public)))
+            ids = {r["case"] for r in rec["results"]}
+            print(report.write(rec, [c for c in run.load_cases(cases_dir) if c["id"] in ids], Path(public)))
         return
 
     cfg = run.load_models()
     models = cfg["candidates"] if cfg.get("models", "candidates") == "candidates" else cfg["models"]
-    cases = run.load_cases(Path(os.environ.get("CVKIT_CASES", "/srv/data/cvkit/verify/cases")))
+    cases = run.load_cases(cases_dir)
     repeats = cfg.get("repeats", 1)
     key = run.api_key()
     est = run.estimate(models, len(cases) * repeats)
@@ -110,7 +112,7 @@ def main(argv=None) -> None:
     (out / f"{rec['stamp']}.md").write_text(run.markdown(rec))
     print(publish.write(rec, page_dir))
     if public:
-        print(publish.write_public(rec, Path(public)))
+        print(report.write(rec, cases, Path(public)))
     value = rec["pick"].get("value")
     vrow = next((r for r in rec["summary"] if r["model"] == value), None)
     if not vrow or (vrow["recall"] or 0) < 0.9 or vrow["valid"] < 0.95:

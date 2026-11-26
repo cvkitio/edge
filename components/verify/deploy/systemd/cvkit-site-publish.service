@@ -1,8 +1,0 @@
-[Unit]
-Description=Upload the cvkit vision benchmark page to cvkit.net
-After=network-online.target aws-sync.service
-
-[Service]
-Type=oneshot
-Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
-ExecStart=/srv/data/workspace/cvkitio/edge-motion-detector/components/verify/deploy/publish-site.sh

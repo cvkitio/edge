@@ -3,8 +3,8 @@
   <out>/index.html          latest run (the page people link to)
   <out>/<stamp>.html        each run, kept
   <out>/history.json        picks and spend per run (for the trend table)
-  write_public(rec, file)   one page for https://cvkit.net/vision-benchmark.html: the latest run only, with
-                            no site name, no run history and no internal service detail
+  page(rec, [], public=True) the public results page: no site name, no run history, no internal service
+                            detail (evals/report.py wraps it for cvkit.net)
 
 
 What's on it: the pick (best value, best, fastest), a quality-vs-cost scatter, the leaderboard, the trend of
@@ -95,6 +95,10 @@ def scatter(rows: list[dict], picks: set[str]) -> str:
     return "".join(out)
 
 
+def public_top() -> str:
+    return '<p class="sub"><a href="/">cvkit.net</a> · code: <a href="https://github.com/cvkitio/edge">cvkitio/edge</a></p>'
+
+
 def page(rec: dict, history: list[dict], public: bool = False) -> str:
     rows, p = rec["summary"], rec["pick"]
     by = {x["model"]: x for x in rows}
@@ -125,7 +129,7 @@ def page(rec: dict, history: list[dict], public: bool = False) -> str:
                    f'<td>{h.get("n_models")}</td><td>${h.get("spent", 0):.2f}</td></tr>' for h in reversed(history[-20:]))
     rule = p.get("rule", {})
     if public:
-        top = '<p class="sub"><a href="/">cvkit.net</a> · code: <a href="https://github.com/cvkitio/edge/tree/main/components/verify">cvkitio/edge</a></p>'
+        top = public_top()
         sub = f"run {esc(rec['stamp'][:10])}, repeated monthly"
         runs = ""
         source = ("Each case is a real detection from an edge detector watching security cameras at an industrial site: "
@@ -194,10 +198,3 @@ def write(rec: dict, out: Path) -> Path:
     (out / "index.html").write_text(html_)
     return out / "index.html"
 
-
-def write_public(rec: dict, file: Path) -> Path:
-    file.parent.mkdir(parents=True, exist_ok=True)
-    tmp = file.with_suffix(".part")
-    tmp.write_text(page(rec, [], public=True))
-    tmp.replace(file)
-    return file

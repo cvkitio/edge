@@ -169,15 +169,28 @@ def test_run_keeps_answer_fields(monkeypatch):
     assert r["answer_label"] == "vehicle" and r["answer_people"] == 3 and r["label"] == 1 and r["people"] == 0
 
 
-def test_public_page_hides_site(tmp_path):
-    from evals import publish
+
+def test_public_report_hides_site(tmp_path):
+    from evals import publish, report
     rows = [{"model": "a/m", "quality": 9.8, "accuracy": 0.99, "recall": 1.0, "rejection": 0.96, "label": 0.9,
              "people": 0.8, "valid": 1.0, "cost": 0.0001, "p50_s": 4.0, "p90_s": 6.0}]
-    rec = {"stamp": "2026-12-01-0630", "n_cases": 78, "n_real": 53, "spent": 2.4, "summary": rows,
-           "pick": {"best": "a/m", "value": "a/m", "fast": "a/m", "rule": run.pick(rows)["rule"]}}
+    case = {"id": "real-01", "camera": "axis-81-2", "jpeg": jpeg(), "claim": {"label": "person", "confidence": 0.6,
+            "bbox": [0.1, 0.1, 0.2, 0.3]}, "truth": {"real": True, "labels": ["person"], "people": 1}}
+    res = {"model": "a/m", "case": "real-01", "truth": case["truth"], "ok": True, "real": True, "answer_label": "person",
+           "answer_people": 1, "confidence": 0.9, "description": "a worker walks past", "cost": 0.0001,
+           "seconds": 2.0, "verdict": 1, "label": 1, "people": 1, "quality": 10.0}
+    rec = {"stamp": "2026-12-01-0630", "n_cases": 1, "n_real": 1, "spent": 2.4, "repeats": 1, "summary": rows,
+           "results": [res], "pick": {"best": "a/m", "value": "a/m", "fast": "a/m", "rule": run.pick(rows)["rule"]}}
     priv = publish.page(rec, [{"stamp": "x", "value": "a/m", "best": "a/m", "n_models": 1, "spent": 1}])
     assert "AU01" in priv and "Runs" in priv
-    pub = publish.write_public(rec, tmp_path / "v.html").read_text()
-    for word in ("AU01", "au01", "NATS", "tank row", "Runs", "2026-12-01-0630"):
-        assert word not in pub, word
-    assert "a/m" in pub and "2026-12-01" in pub
+    d = report.write(rec, [case], tmp_path)
+    assert d.name == "2026-12-01" and (d / "cases" / "real-01-crop.jpg").exists()
+    for page in ("index.html", "method.html"):
+        text = (d / page).read_text()
+        for word in ("AU01", "au01", "axis-81", "NATS", "tank row", "tree/main"):
+            assert word not in text, (page, word)
+    method = (d / "method.html").read_text()
+    assert "a worker walks past" in method and "camera A" in method and 'src="cases/real-01.jpg"' in method
+    assert "method.html" in (d / "index.html").read_text()
+    m = json.loads((tmp_path / "manifest.json").read_text())
+    assert m["runs"][0]["path"] == "2026-12-01/" and "a/m" in m["runs"][0]["headline"]

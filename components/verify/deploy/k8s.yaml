@@ -100,7 +100,7 @@ spec:
                 - {name: CVKIT_CASES, value: /data/verify/cases}
                 - {name: CVKIT_RESULTS, value: /data/verify/results}
                 - {name: CVKIT_PAGE_DIR, value: /share/vision-benchmark}
-                - {name: CVKIT_PUBLIC_FILE, value: /data/verify/public/vision-benchmark.html}   # cvkit.net copy, uploaded by deploy/publish-site.sh
+                - {name: CVKIT_PUBLIC_DIR, value: /data/verify/public/vision-benchmark}   # cvkit.net report; cvkitio/infra site/publish.sh uploads it
               volumeMounts:
                 - {name: data, mountPath: /data}
                 - {name: share, mountPath: /share}
