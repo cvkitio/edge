@@ -110,8 +110,10 @@ def run(key: str, models: list[str], cases: list[dict], repeats: int = 1, max_us
         v = vision.verify(key, model, case["jpeg"], claim, session=session)
         with lock:
             spent[0] += v.cost
+        # The model's answer fields are kept as answer_* so the scores (label, people) don't overwrite them.
+        ans = {(f"answer_{k}" if k in ("label", "people") else k): x for k, x in v.to_dict().items()}
         return {"model": model, "case": case["id"], "kind": case.get("kind", ""), "repeat": rep,
-                "truth": case["truth"], **v.to_dict(), **score(case, v)}
+                "truth": case["truth"], **ans, **score(case, v)}
 
     jobs = [(m, c, r) for r in range(repeats) for c in cases for m in models]
     with cf.ThreadPoolExecutor(workers) as ex:
@@ -182,7 +184,7 @@ def markdown(rec: dict) -> str:
         out += ["", "## Wrong verdicts", "", "| model | case | truth | answer | description |", "|---|---|---|---|---|"]
         for r in sorted(misses, key=lambda r: (r["model"], r["case"])):
             out.append(f"| {r['model']} | {r['case']} | {'real' if r['truth']['real'] else 'false'} | "
-                       f"{r['label']} | {r['description'][:90]} |")
+                       f"{r.get('answer_label', '?')} | {r['description'][:90]} |")
     return "\n".join(out) + "\n"
 
 

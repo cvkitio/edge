@@ -145,7 +145,7 @@ def page(rec: dict, history: list[dict]) -> str:
 plus the claim (label, score, box). It is sent exactly as the verify service sends it: the frame and a zoomed crop around the box.</li>
 <li>Real cases are the worker walking, cycling and pushing a pallet jack, and trucks passing on the road, from a 30-minute
 shadow run (one was a "truck" box on a tank row, which should be rejected). False cases are detector-style boxes drawn
-on static objects in empty frames: ladders, extinguishers, bins, tanks, a hi-vis vest on a hook, a trailer, a container.</li>
+on static objects in empty frames: ladders, extinguishers, bins, tanks, a hi-vis vest on a hook, a container (a box on an empty trailer counts as a real vehicle).</li>
 <li>Quality = 10 × (0.7 × verdict right + 0.2 × label right + 0.1 × people count right); 0 when no valid JSON came back.
 Recall = real detections confirmed; false rejected = false alarms rejected. Cost is what OpenRouter charged.</li>
 <li>Value pick: the cheapest model within {rule.get('tolerance')} of the best quality, with recall ≥ {pct(rule.get('min_recall'))},

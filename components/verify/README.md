@@ -51,8 +51,10 @@ The cases live outside the repo because they are real site footage: `/srv/data/c
 - 52 real Tier 1 events from a 30-minute shadow run: a worker walking, cycling and pushing a pallet
   jack, and trucks on the road.
 - One mislabel: a "truck" box on the tank row, which should be rejected.
-- 25 false alarms: detector-style boxes drawn on static objects in empty frames, such as ladders,
-  extinguishers, bins, IBC tanks, a hi-vis vest on a hook, a trailer and a container.
+- 25 boxes drawn on objects in empty frames. 24 are false alarms: ladders, extinguishers, bins, IBC
+  tanks, a hi-vis vest on a hook, a container. One, a "car" box on an empty flatbed trailer, counts as
+  real, because a trailer is a vehicle under the rubric. It was relabelled after the first run, when
+  18 of 21 models called it real.
 
 A case looks like this:
 

@@ -159,3 +159,11 @@ def test_check_limit_marks_rest_unverified(monkeypatch):
     ver = {d["event_id"]: d for s, d in js.published if s.startswith("events.verified.")}
     assert [ver[f"e{i}"]["status"] for i in range(4)] == ["verified", "verified", "unverified", "unverified"]
     assert ver["e3"]["reason"] == "check limit" and ver["e3"]["dedupe_of"] == "e2"
+
+
+def test_run_keeps_answer_fields(monkeypatch):
+    monkeypatch.setattr(vision, "verify", lambda *a, **k: vision.Verdict("m", True, real=True, label="vehicle", people=3))
+    case = {"id": "c", "jpeg": b"", "camera": "x", "claim": {"label": "car", "confidence": 0.5, "bbox": [0, 0, 1, 1]},
+            "truth": {"real": True, "labels": ["vehicle"], "people": 0}}
+    r = run.run("k", ["m"], [case], log=lambda *a: None)[0]
+    assert r["answer_label"] == "vehicle" and r["answer_people"] == 3 and r["label"] == 1 and r["people"] == 0
