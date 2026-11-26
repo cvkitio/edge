@@ -6,7 +6,7 @@ This file gives Claude Code (and human contributors) the context needed to work 
 
 ## Monorepo Structure
 
-This repository is a monorepo containing four components:
+This repository is a monorepo containing five components:
 
 | Component | Path | Language |
 |-----------|------|----------|
@@ -14,6 +14,7 @@ This repository is a monorepo containing four components:
 | **autotune** | `components/autotune/` | Go |
 | **postprocess** | `components/postprocess/` | Go |
 | **detect** | `components/detect/` | Python (GStreamer + Hailo, runs on the edge Pi; see its README) |
+| **verify** | `components/verify/` | Python (Tier 2 on nas01 k3s: vision-model verify, alerts, benchmark; see its README) |
 
 Shared deployment manifests live in `deploy/`. Documentation lives in `docs/`.
 

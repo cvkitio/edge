@@ -1,0 +1,110 @@
+# cvkit-verify (Tier 2) and the weekly vision benchmark, namespace cvkit on nas01.
+#
+#   components/verify/deploy/deploy.sh      build, import into k3s, create secrets, apply
+#
+# Secrets (created by deploy.sh from 1Password at deploy time, never in this file):
+#   cvkit-verify        OPENROUTER_API_KEY (service key), optional TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID,
+#                       ALERT_WEBHOOK_URL, NTFY_URL
+#   cvkit-verify-eval   OPENROUTER_API_KEY (eval key, so a benchmark can never use up the service's budget)
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: cvkit-verify
+  namespace: cvkit
+data:
+  config.toml: |
+    nats_url = "nats://nats.cvkit:4222"
+    source_stream = "DETECT"
+    out_stream = "VERIFIED"
+    model = "anthropic/claude-haiku-5.5"    # until the benchmark writes cvkit_verify.model
+    fallback = "openai/gpt-6-luna"
+    batch_window_s = 4
+    max_usd_day = 2.0
+    tz = "Australia/Hobart"
+
+    [groups]
+    # AU01: these three look at the same hall, so one person is one check and one alert.
+    au01-hall = ["axis-81-2", "axis-81-3", "axis-81-12"]
+
+    [[alert]]
+    name = "person after hours"
+    labels = ["person"]
+    cameras = ["*"]
+    hours = "18:00-06:30"
+    min_confidence = 0.6
+    cooldown_s = 300
+
+    [[alert]]
+    name = "vehicle in the yard after hours"
+    labels = ["vehicle"]
+    cameras = ["axis-82-*"]
+    hours = "18:00-06:30"
+    min_confidence = 0.6
+    cooldown_s = 600
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: cvkit-verify
+  namespace: cvkit
+spec:
+  replicas: 1
+  strategy: {type: Recreate}
+  selector: {matchLabels: {app: cvkit-verify}}
+  template:
+    metadata:
+      labels: {app: cvkit-verify}
+      annotations: {cvkit/config-rev: "1"}
+    spec:
+      containers:
+        - name: verify
+          image: cvkit-verify:IMAGE_TAG
+          imagePullPolicy: Never
+          envFrom: [{secretRef: {name: cvkit-verify}}]
+          volumeMounts: [{name: config, mountPath: /etc/cvkit-verify}]
+          resources:
+            requests: {cpu: 20m, memory: 64Mi}
+            limits: {memory: 256Mi}
+      volumes:
+        - name: config
+          configMap: {name: cvkit-verify}
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: vision-benchmark
+  namespace: cvkit
+spec:
+  schedule: "30 6 * * 1"          # Monday 06:30 local
+  timeZone: Australia/Hobart
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 2
+  failedJobsHistoryLimit: 2
+  jobTemplate:
+    spec:
+      backoffLimit: 0
+      activeDeadlineSeconds: 3600
+      template:
+        spec:
+          restartPolicy: Never
+          securityContext: {runAsUser: 1000, runAsGroup: 1000}
+          containers:
+            - name: bench
+              image: cvkit-verify:IMAGE_TAG
+              imagePullPolicy: Never
+              command: ["cvkit-vision-bench"]
+              envFrom:
+                - secretRef: {name: cvkit-verify}          # alert sinks
+                - secretRef: {name: cvkit-verify-eval}     # its OPENROUTER_API_KEY wins (listed last)
+              env:
+                - {name: CVKIT_CASES, value: /data/verify/cases}
+                - {name: CVKIT_RESULTS, value: /data/verify/results}
+                - {name: CVKIT_PAGE_DIR, value: /share/vision-benchmark}
+              volumeMounts:
+                - {name: data, mountPath: /data}
+                - {name: share, mountPath: /share}
+          volumes:
+            - name: data
+              hostPath: {path: /srv/data/cvkit, type: Directory}
+            - name: share
+              hostPath: {path: /srv/data/share/cvkitio, type: DirectoryOrCreate}

@@ -1,0 +1,25 @@
+[project]
+name = "cvkit-verify"
+version = "0.1.0"
+description = "Tier 2: verify edge detections with a vision model, dedupe across cameras, alert"
+license = "MIT"
+requires-python = ">=3.11"
+dependencies = ["nats-py>=2.9,<3", "requests>=2.31", "pillow>=10"]
+
+[project.scripts]
+cvkit-verify = "cvkit_verify.service:main"
+cvkit-vision-bench = "evals.weekly:main"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+packages = ["cvkit_verify", "evals"]
+
+[tool.setuptools.package-data]
+evals = ["models.json"]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]

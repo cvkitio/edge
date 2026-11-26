@@ -1,0 +1,29 @@
+{
+  "candidates": [
+    "anthropic/claude-sonnet-5.5",
+    "anthropic/claude-haiku-5.5",
+    "openai/gpt-6.2-sol",
+    "openai/gpt-6.1-terra",
+    "openai/gpt-6-luna",
+    "google/gemini-4-hydrogen",
+    "google/gemini-3.8-flash",
+    "google/gemini-3.5-flash-lite",
+    "qwen/qwen3.8-flash",
+    "qwen/qwen3.7-flash",
+    "z-ai/glm-5.3-flash",
+    "deepseek/deepseek-v4.1-flash",
+    "minimax/minimax-m3.1-flash",
+    "nvidia/nemotron-3.5-super-vl",
+    "meta/muse-ember",
+    "mistralai/mistral-large-4-0",
+    "xiaomi/mimo-v2.6-flash",
+    "tencent/hy4-flash",
+    "thinkingmachines/inkling-2-mini",
+    "moondream/moondream3.1-9b-a2b",
+    "inclusionai/ling-3.0-flash-vl"
+  ],
+  "weekly": "candidates",
+  "repeats": 1,
+  "max_usd": 3.0,
+  "fallback": "anthropic/claude-haiku-5.5"
+}
