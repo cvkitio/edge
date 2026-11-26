@@ -1,0 +1,63 @@
+# cvkit-detect configuration. Installed to /etc/cvkit/detect.toml on the edge box.
+# Camera URLs carry credentials, so the installed file is root:cvkit 0640 and is
+# never committed. Keep real values out of this example.
+
+site = "home"                  # NATS subject token: events.detect.<site>.<camera>
+# edge = "cvkit-edge-01"       # defaults to the hostname
+# status_interval_s = 30
+
+[nats]
+url = "nats://127.0.0.1:4222"  # the local leaf node; it forwards to the hub
+# stream = "EDGE_DETECT"       # local JetStream stream (domain edge01)
+# stream_max_age_days = 7
+# stream_max_bytes = 4294967296
+
+[model]
+hef = "/usr/share/hailo-models/yolov8s_h8l.hef"
+# slots = 6            # Tier 1 decode+Hailo pipelines shared by all cameras (~ Hailo fps / camera fps)
+# slot_max_s = 15      # a camera that has held a slot this long yields to a waiting one
+# postprocess_so = "/usr/lib/aarch64-linux-gnu/hailo/tappas/post_processes/libyolo_hailortpp_post.so"
+# postprocess_fn = "filter"
+# nms_score_threshold = 0.3
+
+[gate]
+# Tier 0: watch every camera's compressed stream (no decode) and only run
+# Tier 1 (decode + Hailo) while something moves. Defaults tuned on AU01 Axis
+# sub-streams with tools/gate_replay.py: 98% of moving objects, Hailo busy 17%
+# of camera-time in a hall with a worker active.
+mode = "on"                    # on | shadow (Tier 1 sees everything; for tuning) | off
+# floor_ratio = 2.0            # P-frame above 2x the quiet-scene floor...
+# floor_min_bytes = 100        # ...and 100 bytes above it counts as motion
+# on_threshold = 2             # frames in a row to open
+# hold_s = 3.0                 # stay open after the last motion (and while YOLO sees a moving track)
+# max_open_s = 120             # then close and re-learn the floor
+# motion_z_high = 4.0          # emd inspector burst trigger (z-score vs running mean)
+# trace_dir = "/var/lib/cvkit/traces"   # per-frame CSV for tools/gate_replay.py
+
+[events]
+labels = ["person", "car", "truck", "bus", "motorcycle", "bicycle", "dog", "cat"]
+min_confidence = 0.5
+min_frames = 5         # frames a track must persist before a start event
+lost_after_s = 3.0     # unseen this long -> end event
+min_move = 0.02        # box centre must travel 2% of the frame: static objects never become events
+
+[snapshot]
+width = 960
+quality = 80
+
+# One block per camera. Ask the camera for a modest sub-stream with a short
+# keyframe interval (1 s), so Tier 1 can start decoding as soon as the gate opens.
+# Hikvision: Channels/102 (set I-frame interval = fps in the web UI).
+# Axis: ?videocodec=h264&resolution=1024x768&fps=10&videokeyframeinterval=10
+# A file path is looped, for testing.
+[[camera]]
+name = "test"
+url = "/var/lib/cvkit/samples/person-bicycle-car-detection.mp4"
+fps = 10
+
+# [[camera]]
+# name = "driveway"
+# url = "rtsp://viewer:PASSWORD@10.3.0.60:554/Streaming/Channels/102"
+# fps = 10
+# codec = "h265"                # h264 (default) or h265: what the stream carries
+# gate = { floor_min_bytes = 200 }   # per-camera override of [gate]

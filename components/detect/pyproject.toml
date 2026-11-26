@@ -1,0 +1,23 @@
+[project]
+name = "cvkit-detect"
+version = "0.1.0"
+description = "On-device object detection on a Hailo accelerator, publishing events to NATS JetStream"
+license = "MIT"
+requires-python = ">=3.11"
+# gi (GStreamer), hailo (TAPPAS), numpy and cv2 come from the OS packages on the
+# edge box (hailo-all, python3-opencv); the venv uses --system-site-packages.
+dependencies = ["nats-py>=2.9,<3"]
+
+[project.scripts]
+cvkit-detect = "cvkit_detect.__main__:main"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+packages = ["cvkit_detect"]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]
