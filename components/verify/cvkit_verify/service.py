@@ -13,7 +13,7 @@ Cost scales with activity, not cameras: only start events are checked, overlappi
 events are published as unverified and rules with ``unverified = true`` still alert, so a person is never
 silently dropped.
 
-The model comes from NATS KV ``cvkit_verify.model`` (written by the weekly benchmark's best-value pick),
+The model comes from NATS KV ``cvkit_verify.model`` (written by the monthly benchmark's best-value pick),
 else ``model`` in the config. The OpenRouter key is OPENROUTER_API_KEY.
 
   cvkit-verify -c /etc/cvkit-verify/config.toml

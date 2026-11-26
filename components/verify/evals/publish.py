@@ -3,6 +3,9 @@
   <out>/index.html          latest run (the page people link to)
   <out>/<stamp>.html        each run, kept
   <out>/history.json        picks and spend per run (for the trend table)
+  write_public(rec, file)   one page for https://cvkit.net/vision-benchmark.html: the latest run only, with
+                            no site name, no run history and no internal service detail
+
 
 What's on it: the pick (best value, best, fastest), a quality-vs-cost scatter, the leaderboard, the trend of
 picks over runs and the method. Case images are not published (they are real site footage).
@@ -38,12 +41,12 @@ border-bottom:1px solid var(--grid);white-space:nowrap}th{color:var(--ink2);font
 td:first-child,th:first-child{text-align:left}tr.pick td:first-child{font-weight:600}
 .tag{display:inline-block;font-size:11px;border:1px solid var(--s2);color:var(--ink);border-radius:9px;
 padding:0 6px;margin-left:6px}
-svg text{fill:var(--ink2);font-size:11px}.ax{stroke:var(--grid)}.dot{stroke:var(--surface);stroke-width:2}
+.card svg{min-width:640px}svg text{fill:var(--ink2);font-size:11px}.ax{stroke:var(--grid)}.dot{stroke:var(--surface);stroke-width:2}
 .legend{display:flex;gap:16px;color:var(--ink2);font-size:13px;margin:4px 0 6px}
 .legend i{display:inline-block;width:10px;height:10px;border-radius:50%;margin-right:6px;vertical-align:-1px}
 #tip{position:fixed;pointer-events:none;background:var(--surface);border:1px solid var(--grid);border-radius:8px;
 padding:6px 9px;font-size:12.5px;display:none;box-shadow:0 2px 8px rgba(0,0,0,.15)}
-p,li{color:var(--ink2);max-width:760px}code{font-size:13px}
+p,li{color:var(--ink2);max-width:760px}code{font-size:13px}a{color:var(--s1)}
 """
 
 
@@ -92,7 +95,7 @@ def scatter(rows: list[dict], picks: set[str]) -> str:
     return "".join(out)
 
 
-def page(rec: dict, history: list[dict]) -> str:
+def page(rec: dict, history: list[dict], public: bool = False) -> str:
     rows, p = rec["summary"], rec["pick"]
     by = {x["model"]: x for x in rows}
     picks = {p.get("value"), p.get("best"), p.get("fast")}
@@ -121,11 +124,33 @@ def page(rec: dict, history: list[dict]) -> str:
     hist = "".join(f'<tr><td>{esc(h["stamp"])}</td><td>{esc(h.get("value") or "")}</td><td>{esc(h.get("best") or "")}</td>'
                    f'<td>{h.get("n_models")}</td><td>${h.get("spent", 0):.2f}</td></tr>' for h in reversed(history[-20:]))
     rule = p.get("rule", {})
+    if public:
+        top = '<p class="sub"><a href="/">cvkit.net</a> · code: <a href="https://github.com/cvkitio/edge/tree/main/components/verify">cvkitio/edge</a></p>'
+        sub = f"run {esc(rec['stamp'][:10])}, repeated monthly"
+        runs = ""
+        source = ("Each case is a real detection from an edge detector watching security cameras at an industrial site: "
+                  "the camera frame with the detector's box drawn on it, plus the claim (label, score, box).")
+        switch = "The verify service switches to it automatically after each run."
+        cases = ("Real cases are people walking, cycling and pushing a pallet jack, and trucks passing on a road. "
+                 "False cases are detector-style boxes drawn on static objects in empty frames: ladders, extinguishers, "
+                 "bins, tanks, a hi-vis vest on a hook, a container (a box on an empty trailer counts as a real vehicle). "
+                 "The images are not published.")
+    else:
+        top, sub = "", f"cvkit verify · {esc(rec['stamp'])}"
+        runs = ('<h2>Runs</h2>\n<div class="card"><table><thead><tr><th>run</th><th>value pick</th><th>best</th>'
+                f'<th>models</th><th>cost</th></tr></thead>\n<tbody>{hist}</tbody></table></div>')
+        source = ("Each case is a Tier 1 start event from the AU01 cameras: the edge snapshot with the detector's box drawn on it,\n"
+                  "plus the claim (label, score, box).")
+        switch = "The verify service switches to it automatically (NATS KV <code>cvkit_verify.model</code>)."
+        cases = ("Real cases are the worker walking, cycling and pushing a pallet jack, and trucks passing on the road, from a 30-minute\n"
+                 "shadow run (one was a \"truck\" box on a tank row, which should be rejected). False cases are detector-style boxes drawn\n"
+                 "on static objects in empty frames: ladders, extinguishers, bins, tanks, a hi-vis vest on a hook, a container "
+                 "(a box on an empty trailer counts as a real vehicle).")
     return f"""<!doctype html><html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1"><title>Vision Model Benchmark</title>
 <style>{CSS}</style></head><body><main>
-<h1>Tier 2 vision model benchmark</h1>
-<p class="sub">cvkit verify · {esc(rec['stamp'])} · {rec['n_cases']} detections ({rec['n_real']} real,
+{top}<h1>Tier 2 vision model benchmark</h1>
+<p class="sub">{sub} · {rec['n_cases']} detections ({rec['n_real']} real,
 {rec['n_cases'] - rec['n_real']} false alarms) · {len(rows)} models · run cost ${rec['spent']:.2f}</p>
 <div class="tiles">{tiles}</div>
 <p>At the value pick's price, 1,000 verified detections a day costs about ${per_day:.2f} a day.</p>
@@ -136,20 +161,15 @@ def page(rec: dict, history: list[dict]) -> str:
 <div class="card"><table><thead><tr><th>model</th><th>quality</th><th>accuracy</th><th>recall</th>
 <th>false rejected</th><th>label</th><th>valid JSON</th><th>$/1k checks</th><th>p50 s</th><th>p90 s</th></tr></thead>
 <tbody>{''.join(trs)}</tbody></table></div>
-<h2>Runs</h2>
-<div class="card"><table><thead><tr><th>run</th><th>value pick</th><th>best</th><th>models</th><th>cost</th></tr></thead>
-<tbody>{hist}</tbody></table></div>
+{runs}
 <h2>Method</h2>
 <ul>
-<li>Each case is a Tier 1 start event from the AU01 cameras: the edge snapshot with the detector's box drawn on it,
-plus the claim (label, score, box). It is sent exactly as the verify service sends it: the frame and a zoomed crop around the box.</li>
-<li>Real cases are the worker walking, cycling and pushing a pallet jack, and trucks passing on the road, from a 30-minute
-shadow run (one was a "truck" box on a tank row, which should be rejected). False cases are detector-style boxes drawn
-on static objects in empty frames: ladders, extinguishers, bins, tanks, a hi-vis vest on a hook, a container (a box on an empty trailer counts as a real vehicle).</li>
+<li>{source} It is sent exactly as the verify service sends it: the frame and a zoomed crop around the box.</li>
+<li>{cases}</li>
 <li>Quality = 10 × (0.7 × verdict right + 0.2 × label right + 0.1 × people count right); 0 when no valid JSON came back.
 Recall = real detections confirmed; false rejected = false alarms rejected. Cost is what OpenRouter charged.</li>
 <li>Value pick: the cheapest model within {rule.get('tolerance')} of the best quality, with recall ≥ {pct(rule.get('min_recall'))},
-median latency ≤ {rule.get('max_p50_s')} s and valid JSON ≥ 98%. The verify service switches to it automatically (NATS KV <code>cvkit_verify.model</code>).</li>
+median latency ≤ {rule.get('max_p50_s')} s and valid JSON ≥ 98%. {switch}</li>
 </ul>
 </main><div id="tip"></div>
 <script>
@@ -173,3 +193,11 @@ def write(rec: dict, out: Path) -> Path:
     (out / f"{rec['stamp']}.html").write_text(html_)
     (out / "index.html").write_text(html_)
     return out / "index.html"
+
+
+def write_public(rec: dict, file: Path) -> Path:
+    file.parent.mkdir(parents=True, exist_ok=True)
+    tmp = file.with_suffix(".part")
+    tmp.write_text(page(rec, [], public=True))
+    tmp.replace(file)
+    return file

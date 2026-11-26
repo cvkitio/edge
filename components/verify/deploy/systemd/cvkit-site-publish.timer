@@ -1,0 +1,12 @@
+[Unit]
+Description=Daily check for a new cvkit vision benchmark page
+
+[Timer]
+# The benchmark runs at 06:30 Hobart on the 1st (19:30 or 20:30 UTC the day before). Checking daily also
+# picks up hand reruns; an unchanged page costs one HEAD request.
+OnCalendar=*-*-* 22:00:00 UTC
+Persistent=true
+RandomizedDelaySec=10m
+
+[Install]
+WantedBy=timers.target

@@ -1,7 +1,7 @@
 # cvkit-verify (Tier 2)
 
 Tier 2 of the cvkit pipeline runs on nas01 (k3s, namespace `cvkit`). It checks Tier 1 detections with a
-vision model before anyone is alerted, and benchmarks vision models every week to choose the one it uses.
+vision model before anyone is alerted, and benchmarks vision models every month to choose the one it uses.
 
 ```
 Tier 0  every frame, every camera   compressed-domain motion gate (edge Pi, no decode)
@@ -30,7 +30,7 @@ Failure behaviour: if the daily budget (`max_usd_day`) is used up, the API fails
 `fallback`), or the snapshot is missing, the event is published with `status = "unverified"`. Rules
 with `unverified = true` (the default) still alert, so a real person is never silently dropped.
 
-## Model choice: the weekly benchmark
+## Model choice: the monthly benchmark
 
 `evals/` follows the same pattern as Readiday's and helmwatch's evals:
 
@@ -39,9 +39,15 @@ with `unverified = true` (the default) still alert, so a real person is never si
   rejection of false alarms, cost per check (as charged by OpenRouter) and latency.
 - The **value pick** is the cheapest model within 0.3 quality of the best, with recall of at least 95%,
   median latency of 8 s or less, and at least 98% valid JSON.
-- `evals/weekly.py` (CronJob `vision-benchmark`, Monday 06:30 Hobart) runs the benchmark, keeps the
-  record in `/srv/data/cvkit/verify/results/`, and publishes the page to
-  `/srv/data/share/cvkitio/vision-benchmark/` (https://nas01.tail7d57a9.ts.net:8443/cvkitio/vision-benchmark/).
+- `evals/monthly.py` (CronJob `vision-benchmark`, 06:30 Hobart on the 1st of each month) runs the
+  benchmark, keeps the record in `/srv/data/cvkit/verify/results/`, and publishes the full page with run
+  history to `/srv/data/share/cvkitio/vision-benchmark/` (https://nas01.tail7d57a9.ts.net:8443/cvkitio/vision-benchmark/).
+- It also writes a public copy of the latest run, with no site name, no run history and no internal
+  detail, to `/srv/data/cvkit/verify/public/vision-benchmark.html`. `deploy/publish-site.sh` uploads it to
+  https://cvkit.net/vision-benchmark.html (the cvkit.net bucket, personal AWS account) when it has changed. The
+  pod has no AWS credentials, so the upload runs on the host: the systemd user timer
+  `cvkit-site-publish.timer` (`deploy/systemd/`, installed in `~/.config/systemd/user/`) runs it daily at
+  22:00 UTC.
   It then writes the value pick to NATS KV `cvkit_verify.model`; the service reloads it within a minute.
   Before a run it checks the eval key's remaining credit and drops the most expensive candidates until
   the estimate fits in half of it. It notifies the admin sinks when the pick changes or a run fails.

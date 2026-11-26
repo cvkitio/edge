@@ -10,7 +10,7 @@ Monorepo for the cvkit edge camera processing platform.
 | **autotune** | `components/autotune/` | Parameter search & tuning — optimises emd detector thresholds |
 | **postprocess** | `components/postprocess/` | Event pipeline — picks up motion events and processes them (S3 upload, webhooks) |
 | **detect** | `components/detect/` | On-device object detection on a Raspberry Pi 5 + Hailo — YOLO, tracking, events to NATS via a leaf node |
-| **verify** | `components/verify/` | Tier 2 on nas01 — vision-model check of detections, cross-camera dedupe, alerts, weekly model benchmark |
+| **verify** | `components/verify/` | Tier 2 on nas01 — vision-model check of detections, cross-camera dedupe, alerts, monthly model benchmark |
 
 ## Shared Infrastructure
 

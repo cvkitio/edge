@@ -1,5 +1,5 @@
-"""The weekly Tier 2 vision benchmark: run the eval, keep the record, publish the page, switch the verify
-service to the best-value model (nas01 CronJob cvkit/vision-benchmark, Monday morning).
+"""The monthly Tier 2 vision benchmark: run the eval, keep the record, publish the page, switch the verify
+service to the best-value model (nas01 CronJob cvkit/vision-benchmark, 06:30 Hobart on the 1st).
 
   cvkit-vision-bench                          run, publish, set the model
   cvkit-vision-bench --publish FILE.json      re-publish an existing record without running anything
@@ -10,6 +10,8 @@ Environment:
   CVKIT_CASES          case dir (default /srv/data/cvkit/verify/cases)
   CVKIT_RESULTS        records (default /srv/data/cvkit/verify/results)
   CVKIT_PAGE_DIR       page output (default /srv/data/share/cvkitio/vision-benchmark, the tailnet share)
+  CVKIT_PUBLIC_FILE    the public copy for https://cvkit.net/vision-benchmark.html (no site name, no history;
+                       deploy/publish-site.sh uploads it). Unset: no public copy.
   NATS_URL             for the KV write (default nats://nats.cvkit:4222)
   TELEGRAM_*/ALERT_WEBHOOK_URL/NTFY_URL   optional: tell the admin when the pick changes or a run fails
 
@@ -32,7 +34,7 @@ import requests
 from cvkit_verify.alerts import Alerter
 from evals import publish, run
 
-log = logging.getLogger("evals.weekly")
+log = logging.getLogger("evals.monthly")
 
 
 def remaining_credit(key: str) -> float | None:
@@ -74,12 +76,16 @@ def main(argv=None) -> None:
     ap.add_argument("--dry-run", action="store_true")
     a = ap.parse_args(argv)
     page_dir = Path(os.environ.get("CVKIT_PAGE_DIR", "/srv/data/share/cvkitio/vision-benchmark"))
+    public = os.environ.get("CVKIT_PUBLIC_FILE")
     if a.publish:
-        print(publish.write(json.loads(a.publish.read_text()), page_dir))
+        rec = json.loads(a.publish.read_text())
+        print(publish.write(rec, page_dir))
+        if public:
+            print(publish.write_public(rec, Path(public)))
         return
 
     cfg = run.load_models()
-    models = cfg["candidates"] if cfg.get("weekly", "candidates") == "candidates" else cfg["weekly"]
+    models = cfg["candidates"] if cfg.get("models", "candidates") == "candidates" else cfg["models"]
     cases = run.load_cases(Path(os.environ.get("CVKIT_CASES", "/srv/data/cvkit/verify/cases")))
     repeats = cfg.get("repeats", 1)
     key = run.api_key()
@@ -103,6 +109,8 @@ def main(argv=None) -> None:
     (out / f"{rec['stamp']}.json").write_text(json.dumps(rec, indent=1))
     (out / f"{rec['stamp']}.md").write_text(run.markdown(rec))
     print(publish.write(rec, page_dir))
+    if public:
+        print(publish.write_public(rec, Path(public)))
     value = rec["pick"].get("value")
     vrow = next((r for r in rec["summary"] if r["model"] == value), None)
     if not vrow or (vrow["recall"] or 0) < 0.9 or vrow["valid"] < 0.95:

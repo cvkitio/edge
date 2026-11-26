@@ -8,7 +8,7 @@ dependencies = ["nats-py>=2.9,<3", "requests>=2.31", "pillow>=10"]
 
 [project.scripts]
 cvkit-verify = "cvkit_verify.service:main"
-cvkit-vision-bench = "evals.weekly:main"
+cvkit-vision-bench = "evals.monthly:main"
 
 [build-system]
 requires = ["setuptools>=68"]

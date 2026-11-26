@@ -167,3 +167,17 @@ def test_run_keeps_answer_fields(monkeypatch):
             "truth": {"real": True, "labels": ["vehicle"], "people": 0}}
     r = run.run("k", ["m"], [case], log=lambda *a: None)[0]
     assert r["answer_label"] == "vehicle" and r["answer_people"] == 3 and r["label"] == 1 and r["people"] == 0
+
+
+def test_public_page_hides_site(tmp_path):
+    from evals import publish
+    rows = [{"model": "a/m", "quality": 9.8, "accuracy": 0.99, "recall": 1.0, "rejection": 0.96, "label": 0.9,
+             "people": 0.8, "valid": 1.0, "cost": 0.0001, "p50_s": 4.0, "p90_s": 6.0}]
+    rec = {"stamp": "2026-12-01-0630", "n_cases": 78, "n_real": 53, "spent": 2.4, "summary": rows,
+           "pick": {"best": "a/m", "value": "a/m", "fast": "a/m", "rule": run.pick(rows)["rule"]}}
+    priv = publish.page(rec, [{"stamp": "x", "value": "a/m", "best": "a/m", "n_models": 1, "spent": 1}])
+    assert "AU01" in priv and "Runs" in priv
+    pub = publish.write_public(rec, tmp_path / "v.html").read_text()
+    for word in ("AU01", "au01", "NATS", "tank row", "Runs", "2026-12-01-0630"):
+        assert word not in pub, word
+    assert "a/m" in pub and "2026-12-01" in pub

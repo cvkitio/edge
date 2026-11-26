@@ -1,4 +1,4 @@
-# cvkit-verify (Tier 2) and the weekly vision benchmark, namespace cvkit on nas01.
+# cvkit-verify (Tier 2) and the monthly vision benchmark, namespace cvkit on nas01.
 #
 #   components/verify/deploy/deploy.sh      build, import into k3s, create secrets, apply
 #
@@ -75,7 +75,7 @@ metadata:
   name: vision-benchmark
   namespace: cvkit
 spec:
-  schedule: "30 6 * * 1"          # Monday 06:30 local
+  schedule: "30 6 1 * *"          # 1st of the month, 06:30 local
   timeZone: Australia/Hobart
   concurrencyPolicy: Forbid
   successfulJobsHistoryLimit: 2
@@ -100,6 +100,7 @@ spec:
                 - {name: CVKIT_CASES, value: /data/verify/cases}
                 - {name: CVKIT_RESULTS, value: /data/verify/results}
                 - {name: CVKIT_PAGE_DIR, value: /share/vision-benchmark}
+                - {name: CVKIT_PUBLIC_FILE, value: /data/verify/public/vision-benchmark.html}   # cvkit.net copy, uploaded by deploy/publish-site.sh
               volumeMounts:
                 - {name: data, mountPath: /data}
                 - {name: share, mountPath: /share}

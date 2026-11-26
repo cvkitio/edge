@@ -22,7 +22,7 @@
     "moondream/moondream3.1-9b-a2b",
     "inclusionai/ling-3.0-flash-vl"
   ],
-  "weekly": "candidates",
+  "models": "candidates",
   "repeats": 1,
   "max_usd": 3.0,
   "fallback": "anthropic/claude-haiku-5.5"
