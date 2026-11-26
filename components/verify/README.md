@@ -42,12 +42,13 @@ with `unverified = true` (the default) still alert, so a real person is never si
 - `evals/monthly.py` (CronJob `vision-benchmark`, 06:30 Hobart on the 1st of each month) runs the
   benchmark, keeps the record in `/srv/data/cvkit/verify/results/`, and publishes the full page with run
   history to `/srv/data/share/cvkitio/vision-benchmark/` (https://nas01.tail7d57a9.ts.net:8443/cvkitio/vision-benchmark/).
-- It also writes a public copy of the latest run, with no site name, no run history and no internal
-  detail, to `/srv/data/cvkit/verify/public/vision-benchmark.html`. `deploy/publish-site.sh` uploads it to
-  https://cvkit.net/vision-benchmark.html (the cvkit.net bucket, personal AWS account) when it has changed. The
-  pod has no AWS credentials, so the upload runs on the host: the systemd user timer
-  `cvkit-site-publish.timer` (`deploy/systemd/`, installed in `~/.config/systemd/user/`) runs it daily at
-  22:00 UTC.
+- It also writes the public report (`evals/report.py`) to `/srv/data/cvkit/verify/public/vision-benchmark/`:
+  one folder per run with the results page, a method page showing every case (the frame with the
+  detector's box, the crop sent with it, the truth and every model's verdict, label, people count,
+  description, cost and time) and the case images, plus `manifest.json`. The site is not named and camera
+  ids become letters. cvkitio/infra `site/publish.sh` (a daily systemd user timer on nas01, because the pod
+  has no AWS credentials) builds cvkit.net from that folder: the run at
+  https://cvkit.net/resources/reports/vision-benchmark/, the Resources index and the sitemap.
   It then writes the value pick to NATS KV `cvkit_verify.model`; the service reloads it within a minute.
   Before a run it checks the eval key's remaining credit and drops the most expensive candidates until
   the estimate fits in half of it. It notifies the admin sinks when the pick changes or a run fails.

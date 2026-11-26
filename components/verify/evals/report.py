@@ -14,8 +14,11 @@ not named.
 from __future__ import annotations
 
 import html
+import io
 import json
 from pathlib import Path
+
+from PIL import Image
 
 from cvkit_verify import vision
 from evals import publish
@@ -88,7 +91,7 @@ def method_page(rec: dict, cases: list[dict], date: str) -> str:
     fam = {}
     for k, v in vision.FAMILY.items():
         fam.setdefault(v, []).append(k)
-    fam_rows = "".join(f"<tr><td>{esc(f)}</td><td>{esc(', '.join(sorted(ks)))}</td></tr>" for f, ks in sorted(fam.items()))
+    fam_rows = "".join(f"<tr><td>{esc(f)}</td><td class=\"desc\">{esc(', '.join(sorted(ks)))}</td></tr>" for f, ks in sorted(fam.items()))
     rule = rec["pick"].get("rule", {})
     n_real = rec["n_real"]
 
@@ -99,6 +102,7 @@ def method_page(rec: dict, cases: list[dict], date: str) -> str:
         right = sum(r["verdict"] for r in rs)
         kind = "real" if t["real"] else "false"
         x0, y0, x1, y1 = c["claim"]["bbox"]
+        fw, fh = Image.open(io.BytesIO(c["jpeg"])).size
         trs = []
         for r in rs:
             if not r["ok"]:
@@ -115,7 +119,7 @@ def method_page(rec: dict, cases: list[dict], date: str) -> str:
                 f'<td>${r["cost"]:.5f}</td><td>{r["seconds"]:.1f}</td></tr>')
         cards.append(f"""<article class="case" data-kind="{kind}" data-wrong="{len(rs) - right}" id="{esc(c['id'])}">
 <h3>{esc(c['id'])} · {right}/{len(rs)} models right</h3>
-<div class="imgs"><figure style="margin:0"><img loading="lazy" src="cases/{esc(c['id'])}.jpg" width="960" height="720"
+<div class="imgs"><figure style="margin:0"><img loading="lazy" src="cases/{esc(c['id'])}.jpg" width="{fw}" height="{fh}"
 alt="Frame {esc(c['id'])} with the detector's {esc(c['claim']['label'])} box drawn on it"><figcaption>Image 1: the frame as the detector
 saved it, box drawn by the detector</figcaption></figure>
 <figure style="margin:0"><img loading="lazy" src="cases/{esc(c['id'])}-crop.jpg" width="448" height="448"
@@ -170,7 +174,7 @@ once, so run-to-run variation is not measured. Treat the ranking as a first cut 
 and conditions.</p>
 
 <h2>What the model is sent</h2>
-<p>A system prompt, then a user message with one line of text and two images: the full frame (960×720 here) and a
+<p>A system prompt, then a user message with one line of text and two images: the full frame as saved (960×720 or 960×540) and a
 448×448 crop centred on the box, 2.5 times the box's larger side and at least 15% of the frame. Temperature 0. Calls
 go through OpenRouter's chat completions API; cost is what OpenRouter reports for the call.</p>
 <pre>{esc(vision.SYSTEM)}</pre>
