@@ -21,6 +21,7 @@ import logging
 import os
 import signal
 import socket
+import sys
 import time
 
 import gi
@@ -174,7 +175,10 @@ class App:
             c.stop()
         await asyncio.gather(*tasks, return_exceptions=True)  # each flushes open events
         await asyncio.gather(pool_task, return_exceptions=True)
-        await self.pool.stop()
+        # The Tier 1 slots are not set to NULL: libgsthailo can segfault in
+        # gst_object_unref when several hailonets sharing a vdevice tear down,
+        # which would lose the end events still queued. main() exits with
+        # os._exit instead, and closing the process releases the Hailo.
         while not self.queue.empty():  # let the publisher drain the end events
             await asyncio.sleep(0.05)
         await asyncio.sleep(0.2)
@@ -195,18 +199,20 @@ def main() -> None:
     if not cfg.edge:
         cfg.edge = socket.gethostname()
     loop = asyncio.new_event_loop()
+    code = 0
     try:
         loop.run_until_complete(App(cfg).run())
-    finally:
-        if pipeline_mod.abandoned:
-            # A stuck GStreamer/HailoRT thread would block interpreter exit (and
-            # keep the Hailo claimed) until systemd SIGKILLs us. Events are
-            # already flushed and NATS drained, so leave now.
-            logging.getLogger("cvkit_detect").warning(
-                "exiting without joining %d stuck pipeline(s)", pipeline_mod.abandoned)
-            logging.shutdown()
-            os._exit(0)
-        loop.close()
+    except Exception:
+        logging.getLogger("cvkit_detect").exception("fatal")
+        code = 1
+    if pipeline_mod.abandoned:
+        logging.getLogger("cvkit_detect").warning(
+            "exiting without joining %d stuck pipeline(s)", pipeline_mod.abandoned)
+    # Events are flushed and NATS drained. Leave without running GStreamer/HailoRT
+    # finalizers (see App.run) or joining stuck streaming threads.
+    logging.shutdown()
+    sys.stdout.flush()
+    os._exit(code)
 
 
 if __name__ == "__main__":
