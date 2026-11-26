@@ -89,7 +89,8 @@ def scatter(rows: list[dict], picks: set[str]) -> str:
         if pk:
             anchor = "end" if cx > w * 0.75 else "start"
             dx = -12 if anchor == "end" else 12
-            out.append(f'<text x="{cx + dx:.1f}" y="{cy - 9:.1f}" text-anchor="{anchor}" '
+            ly = cy - 9 if cy - 9 > t + 12 else cy + 19      # below the dot when it sits at the top edge
+            out.append(f'<text x="{cx + dx:.1f}" y="{ly:.1f}" text-anchor="{anchor}" '
                        f'style="fill:var(--ink)">{esc(x["model"].split("/")[-1])}</text>')
     out.append("</svg>")
     return "".join(out)
