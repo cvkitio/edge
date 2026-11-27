@@ -73,10 +73,13 @@ def load_cases(d: Path, limit: int | None = None) -> list[dict]:
 def score(case: dict, v: vision.Verdict) -> dict:
     t = case["truth"]
     if not v.ok:
-        return {"verdict": 0, "label": 0, "people": 0, "quality": 0.0}
+        return {"verdict": 0, "label": 0, "people": None if t.get("people") is None else 0, "quality": 0.0}
     s = {"verdict": int(v.real == t["real"]), "label": int(v.label in t["labels"]),
-         "people": int(v.people == t["people"])}
-    s["quality"] = round(10 * (0.7 * s["verdict"] + 0.2 * s["label"] + 0.1 * s["people"]), 2)
+         "people": None if t.get("people") is None else int(v.people == t["people"])}
+    if s["people"] is None:     # the dataset can't say how many people are in the frame: score the rest
+        s["quality"] = round(10 * (0.7 * s["verdict"] + 0.2 * s["label"]) / 0.9, 2)
+    else:
+        s["quality"] = round(10 * (0.7 * s["verdict"] + 0.2 * s["label"] + 0.1 * s["people"]), 2)
     return s
 
 
@@ -113,6 +116,7 @@ def run(key: str, models: list[str], cases: list[dict], repeats: int = 1, max_us
         # The model's answer fields are kept as answer_* so the scores (label, people) don't overwrite them.
         ans = {(f"answer_{k}" if k in ("label", "people") else k): x for k, x in v.to_dict().items()}
         return {"model": model, "case": case["id"], "kind": case.get("kind", ""), "repeat": rep,
+                "source": case.get("source") or "site",
                 "truth": case["truth"], **ans, **score(case, v)}
 
     jobs = [(m, c, r) for r in range(repeats) for c in cases for m in models]
@@ -143,12 +147,17 @@ def summary(results: list[dict], models: list[str]) -> list[dict]:
             "recall": round(statistics.mean(r["verdict"] for r in real), 3) if real else None,
             "rejection": round(statistics.mean(r["verdict"] for r in fake), 3) if fake else None,
             "label": round(statistics.mean(r["label"] for r in rs), 3),
-            "people": round(statistics.mean(r["people"] for r in rs), 3),
+            "people": round(statistics.mean(ps), 3) if (ps := [r["people"] for r in rs if r["people"] is not None]) else None,
             "valid": round(sum(r["ok"] for r in rs) / len(rs), 3),
             "cost": round(statistics.mean(r["cost"] for r in rs), 6),       # USD per verification
             "p50_s": round(statistics.median(secs), 2) if secs else None,
             "p90_s": round(sorted(secs)[int(0.9 * (len(secs) - 1))], 2) if secs else None,
             "tokens_out": round(statistics.mean(r["tokens_out"] for r in rs)),
+            "passes": len({r.get("repeat", 0) for r in rs}),
+            "by_source": {src: {"n": len(g), "accuracy": round(statistics.mean(r["verdict"] for r in g), 3),
+                                "quality": round(statistics.mean(r["quality"] for r in g), 2)}
+                          for src in sorted({r.get("source") or "site" for r in rs})
+                          for g in [[r for r in rs if (r.get("source") or "site") == src]]},
         })
     rows.sort(key=lambda r: (-r["quality"], r["cost"]))
     return rows
@@ -177,7 +186,7 @@ def markdown(rec: dict) -> str:
            "|---|---|---|---|---|---|---|---|---|---|"]
     for r in rows:
         out.append(f"| {r['model']} | {r['quality']} | {r['accuracy']:.0%} | {r['recall']:.0%} | "
-                   f"{r['rejection']:.0%} | {r['label']:.0%} | {r['people']:.0%} | {r['valid']:.0%} | "
+                   f"{r['rejection']:.0%} | {r['label']:.0%} | {'-' if r['people'] is None else format(r['people'], '.0%')} | {r['valid']:.0%} | "
                    f"{r['cost'] * 1000:.2f} | {r['p50_s']} |")
     misses = [r for r in rec["results"] if r["ok"] and not r["verdict"]]
     if misses:

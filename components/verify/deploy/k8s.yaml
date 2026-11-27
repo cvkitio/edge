@@ -83,7 +83,7 @@ spec:
   jobTemplate:
     spec:
       backoffLimit: 0
-      activeDeadlineSeconds: 3600
+      activeDeadlineSeconds: 14400   # slow models take 20-25 s an answer; a full two-stage run is ~1.5 h
       template:
         spec:
           restartPolicy: Never
@@ -97,7 +97,7 @@ spec:
                 - secretRef: {name: cvkit-verify}          # alert sinks
                 - secretRef: {name: cvkit-verify-eval}     # its OPENROUTER_API_KEY wins (listed last)
               env:
-                - {name: CVKIT_CASES, value: /data/verify/cases}
+                - {name: CVKIT_CASES, value: /data/verify/cases-v2}   # site + MEVA + ENA24 + Open Images (evals/datasets/README.md)
                 - {name: CVKIT_RESULTS, value: /data/verify/results}
                 - {name: CVKIT_PAGE_DIR, value: /share/vision-benchmark}
                 - {name: CVKIT_PUBLIC_DIR, value: /data/verify/public/vision-benchmark}   # cvkit.net report; cvkitio/infra site/publish.sh uploads it

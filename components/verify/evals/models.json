@@ -24,6 +24,8 @@
   ],
   "models": "candidates",
   "repeats": 1,
-  "max_usd": 3.0,
+  "max_usd": 9.0,
+  "screen": {"cases": 100, "budget_share": 0.5},
+  "final": {"models": 8, "passes": 3, "within": 0.5, "min_recall": 0.9, "max_cost_per_1k": 1.0},
   "fallback": "anthropic/claude-haiku-5.5"
 }

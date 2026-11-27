@@ -129,17 +129,46 @@ def page(rec: dict, history: list[dict], public: bool = False) -> str:
     hist = "".join(f'<tr><td>{esc(h["stamp"])}</td><td>{esc(h.get("value") or "")}</td><td>{esc(h.get("best") or "")}</td>'
                    f'<td>{h.get("n_models")}</td><td>${h.get("spent", 0):.2f}</td></tr>' for h in reversed(history[-20:]))
     rule = p.get("rule", {})
+    names = {"site": "industrial site", "meva": "MEVA", "ena24": "ENA24 trail cams", "openimages": "Open Images"}
+    srcs = [k for k in names if any(k in (x.get("by_source") or {}) for x in rows)]
+    by_src = ""
+    if len(srcs) > 1:
+        head_ = "".join(f"<th>{names[k]}</th>" for k in srcs)
+        body_ = "".join(f'<tr><td>{esc(x["model"])}</td>' + "".join(
+            f'<td>{pct((x.get("by_source") or {}).get(k, {}).get("accuracy"))}</td>' for k in srcs) + "</tr>" for x in rows)
+        ns = {k: next(((x.get("by_source") or {}).get(k, {}).get("n") for x in rows if k in (x.get("by_source") or {})), 0)
+              for k in srcs}
+        passes = rec.get("repeats", 1)
+        by_src = (f'<h2>Accuracy by source</h2><p>Share of verdicts right, per source ({", ".join(f"{names[k]} {ns[k] // max(passes, 1)}" for k in srcs)} cases).</p>'
+                  f'<div class="card"><table><thead><tr><th>model</th>{head_}</tr></thead><tbody>{body_}</tbody></table></div>')
+    scr = rec.get("screen") or {}
+    screen_html = ""
+    if scr.get("summary"):
+        finals = {x["model"] for x in rows}
+        srows = "".join(f'<tr class="{"pick" if x["model"] in finals else ""}"><td>{esc(x["model"])}'
+                        f'{"<span class=tag>final</span>" if x["model"] in finals else ""}</td><td>{x["quality"]}</td>'
+                        f'<td>{pct(x["recall"])}</td><td>{pct(x["rejection"])}</td><td>${x["cost"] * 1000:.2f}</td>'
+                        f'<td>{x["p50_s"]}</td></tr>' for x in scr["summary"])
+        sr = scr.get("rule", {})
+        screen_html = (f'<h2>Screen: every model, {scr["n_cases"]} cases, one pass</h2><p>Models within {sr.get("within")} of the best '
+                       f'screen quality, with recall of at least {pct(sr.get("min_recall"))} and under ${sr.get("max_cost_per_1k")} '
+                       f'per 1,000 checks, went to the final ({sr.get("models")} at most, cheapest first). The leaderboard above is the final.</p>'
+                       f'<div class="card"><table><thead><tr><th>model</th><th>quality</th><th>recall</th><th>false rejected</th>'
+                       f'<th>$/1k checks</th><th>p50 s</th></tr></thead><tbody>{srows}</tbody></table></div>')
+    if scr.get("skipped"):
+        screen_html = (f"<h2>Screen</h2><p>No screen this run: {esc(scr['skipped'])}. The models above answered every "
+                       f"case {rec.get('repeats', 1)} times; the next monthly run screens every candidate first.</p>")
     if public:
         top = public_top()
         sub = f"run {esc(rec['stamp'][:10])}, repeated monthly"
         runs = ""
-        source = ("Each case is a real detection from an edge detector watching security cameras at an industrial site: "
-                  "the camera frame with the detector's box drawn on it, plus the claim (label, score, box).")
+        source = ("Each case is a detection from cvkit's edge detector (YOLOv8s on a Hailo-8L): the frame with the "
+                  "detector's box drawn on it, plus the claim (label, score, box).")
         switch = "The verify service switches to it automatically after each run."
-        cases = ("Real cases are people walking, cycling and pushing a pallet jack, and trucks passing on a road. "
-                 "False cases are detector-style boxes drawn on static objects in empty frames: ladders, extinguishers, "
-                 "bins, tanks, a hi-vis vest on a hook, a container (a box on an empty trailer counts as a real vehicle). "
-                 "The images are not published.")
+        cases = ("Cases come from an industrial site's cameras and from three public datasets: MEVA surveillance "
+                 "video, ENA24 trail cameras (day and infrared night) and Open Images photos. For the datasets, the claims "
+                 "are real output of the same detector, and truth comes from the datasets' own labels. The method page "
+                 "shows every image, how its truth was decided and every model's answer.")
     else:
         top, sub = "", f"cvkit verify · {esc(rec['stamp'])}"
         runs = ('<h2>Runs</h2>\n<div class="card"><table><thead><tr><th>run</th><th>value pick</th><th>best</th>'
@@ -166,6 +195,8 @@ def page(rec: dict, history: list[dict], public: bool = False) -> str:
 <div class="card"><table><thead><tr><th>model</th><th>quality</th><th>accuracy</th><th>recall</th>
 <th>false rejected</th><th>label</th><th>valid JSON</th><th>$/1k checks</th><th>p50 s</th><th>p90 s</th></tr></thead>
 <tbody>{''.join(trs)}</tbody></table></div>
+{by_src}
+{screen_html}
 {runs}
 <h2>Method</h2>
 <ul>

@@ -39,6 +39,12 @@ with `unverified = true` (the default) still alert, so a real person is never si
   rejection of false alarms, cost per check (as charged by OpenRouter) and latency.
 - The **value pick** is the cheapest model within 0.3 quality of the best, with recall of at least 95%,
   median latency of 8 s or less, and at least 98% valid JSON.
+- The monthly run has two stages to stay within the eval key's $10 a month (`models.json` `screen` and
+  `final`). Every candidate answers a fixed, stratified 100-case sample once. Then up to 8 models within
+  0.5 quality of the best, with screen recall of at least 90% and a cost under $1 per 1,000 checks, answer
+  every case 3 times, and the pick comes from that final stage. A single pass couldn't separate close models:
+  two runs on the same day picked different ones. The budget is 90% of the key's remaining credit, capped at
+  `max_usd`. The screen drops the priciest models to fit its half; the final cuts passes, then models.
 - `evals/monthly.py` (CronJob `vision-benchmark`, 06:30 Hobart on the 1st of each month) runs the
   benchmark, keeps the record in `/srv/data/cvkit/verify/results/`, and publishes the full page with run
   history to `/srv/data/share/cvkitio/vision-benchmark/` (https://nas01.tail7d57a9.ts.net:8443/cvkitio/vision-benchmark/).
@@ -53,15 +59,20 @@ with `unverified = true` (the default) still alert, so a real person is never si
   Before a run it checks the eval key's remaining credit and drops the most expensive candidates until
   the estimate fits in half of it. It notifies the admin sinks when the pick changes or a run fails.
 
-The cases live outside the repo because they are real site footage: `/srv/data/cvkit/verify/cases/`
-(`cases.json` plus `images/`). The AU01 set has 78 cases:
-- 52 real Tier 1 events from a 30-minute shadow run: a worker walking, cycling and pushing a pallet
-  jack, and trucks on the road.
-- One mislabel: a "truck" box on the tank row, which should be rejected.
-- 25 boxes drawn on objects in empty frames. 24 are false alarms: ladders, extinguishers, bins, IBC
-  tanks, a hi-vis vest on a hook, a container. One, a "car" box on an empty flatbed trailer, counts as
-  real, because a trailer is a vehicle under the rubric. It was relabelled after the first run, when
-  18 of 21 models called it real.
+The cases live outside the repo in `/srv/data/cvkit/verify/cases-v2/` (`cases.json`, `images/`,
+`review.json`). There are 293 cases from four sources:
+
+| Source | Real | False | What it adds |
+|---|---|---|---|
+| Industrial site (5 fisheye cameras) | 53 | 25 | the deployment itself; truth by hand. False cases are boxes drawn on ladders, extinguishers, a hi-vis vest |
+| MEVA (CC BY 4.0) | 80 | 0 | another site: 24 surveillance cameras, indoor and outdoor, people and vehicles |
+| ENA24 trail cameras (CDLA-Permissive) | 57 | 13 | infrared night and animals; animals the detector called a person |
+| Open Images V7 (CC BY 2.0) | 26 | 39 | snow, fog, dark streets; statues, dolls, posters, screens the detector called a person |
+
+For the datasets, every claim is real output of the live Tier 1 model on the Hailo, and truth comes from the
+datasets' labels. Every case was then viewed by eye. 15 Open Images cases were excluded and 9 relabelled
+(pictures of people marked as real, real animals marked as absent); `review.json` records each one with its
+reason. How to rebuild the set is in `evals/datasets/README.md`.
 
 A case looks like this:
 

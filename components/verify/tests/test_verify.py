@@ -194,3 +194,29 @@ def test_public_report_hides_site(tmp_path):
     assert "method.html" in (d / "index.html").read_text()
     m = json.loads((tmp_path / "manifest.json").read_text())
     assert m["runs"][0]["path"] == "2026-12-01/" and "a/m" in m["runs"][0]["headline"]
+
+
+def test_two_stage_screens_then_repeats_cheap_finalists(monkeypatch):
+    from evals import monthly
+    price = {"cheap-good": 0.0001, "cheap-bad": 0.0001, "pricey-good": 0.004, "mid-good": 0.0003}
+
+    def fake_verify(key, model, jpg, claim, **kw):
+        real = claim.label == "person"
+        ans = real if model != "cheap-bad" else not real
+        return vision.Verdict(model, True, real=ans, label="person" if ans else "none", people=1,
+                              cost=price[model], seconds=1.0)
+
+    monkeypatch.setattr(vision, "verify", fake_verify)
+    monkeypatch.setattr(run, "estimate", lambda models, n: {m: price[m] * n for m in models})
+    cases = [{"id": f"c{i}", "jpeg": b"", "camera": "x", "source": "s" if i % 2 else "t",
+              "claim": {"label": "person" if i % 3 else "dog", "confidence": 0.5, "bbox": [0, 0, 1, 1]},
+              "truth": {"real": bool(i % 3), "labels": ["person"] if i % 3 else ["none"], "people": None}}
+             for i in range(30)]
+    cfg = {"screen": {"cases": 10}, "final": {"models": 2, "passes": 3, "max_cost_per_1k": 1.0}}
+    rec = monthly.two_stage("k", list(price), cases, cfg, budget=10.0)
+    assert rec["screen"]["n_cases"] == 10 and len(rec["screen"]["summary"]) == 4
+    assert rec["models"] == ["cheap-good", "mid-good"]          # pricey excluded by cost, bad by quality
+    assert rec["repeats"] == 3 and len(rec["results"]) == 2 * 30 * 3
+    assert rec["pick"]["value"] == "cheap-good"
+    assert {r["source"] for r in rec["results"]} == {"s", "t"}
+    assert rec["summary"][0]["people"] is None and "by_source" in rec["summary"][0]
