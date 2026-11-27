@@ -10,6 +10,7 @@ Monorepo for the cvkit edge camera processing platform.
 | **autotune** | `components/autotune/` | Parameter search & tuning — optimises emd detector thresholds |
 | **postprocess** | `components/postprocess/` | Event pipeline — picks up motion events and processes them (S3 upload, webhooks) |
 | **detect** | `components/detect/` | On-device object detection on a Raspberry Pi 5 + Hailo — YOLO, tracking, events to NATS via a leaf node |
+| **verify** | `components/verify/` | Tier 2 on nas01 — vision-model check of detections, cross-camera dedupe, alerts, monthly model benchmark |
 
 ## Shared Infrastructure
 
@@ -22,6 +23,8 @@ All components communicate via **NATS JetStream**. See `deploy/` for Kubernetes 
 | `events.raw.<site>.<camera>` | emd | autotune, postprocess |
 | `events.detect.<site>.<camera>` | detect (edge, via leaf node) | hub `DETECT` stream consumers |
 | `snapshots.<site>.<camera>.<event_id>` | detect | hub `DETECT` stream consumers |
+| `events.verified.<site>.<camera>` | verify | hub `VERIFIED` stream consumers |
+| `alerts.<site>.<camera>` | verify | hub `VERIFIED` stream consumers, push sinks |
 | `events.confirmed.<site>.<camera>` | postprocess | — |
 | `events.suppressed.<site>.<camera>` | postprocess | — |
 | `clips.uploaded.<site>.<camera>` | postprocess | — |

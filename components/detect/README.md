@@ -32,13 +32,11 @@ interval). A closed gate costs no decode and no Hailo time. Events need a
 track that has *moved* (`min_move`), so a fire extinguisher or a parked
 forklift that YOLO mislabels never becomes an event.
 
-**Tier 2** is not built yet. The plan: a consumer on nas01 reads `DETECT`
-start events and their snapshots, de-duplicates across cameras that overlap,
-and sends batches to a vision model (batch APIs are about half price and fine
-for a non-urgent verify/describe step). Its verdicts go to
-`events.verified.<site>.<camera>` for alerting. Only events that pass Tier 1
-(tens per hour per busy camera) reach it, so cost scales with activity, not
-with camera count.
+**Tier 2** is `components/verify` on nas01: it reads `DETECT` start events and
+their snapshots, merges cameras that overlap, asks a vision model whether each
+detection is real, publishes `events.verified.<site>.<camera>` and raises
+alerts. Only events that pass Tier 1 reach it, so cost scales with activity,
+not with camera count. See its README.
 
 ### Tuning Tier 0
 
