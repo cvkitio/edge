@@ -49,7 +49,7 @@ uint32_t emd_br_read_ue(emd_bitreader_t *br) {
     }
     if (leading_zeros == 0) return 0;
     uint32_t suffix = emd_br_read_bits(br, leading_zeros);
-    return (uint32_t)((1 << leading_zeros) - 1 + suffix);
+    return (1u << leading_zeros) - 1u + suffix;
 }
 
 /* Signed Exp-Golomb (se(v))

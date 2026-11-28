@@ -105,7 +105,7 @@ int emd_h264_depay_feed(emd_h264_depay_t *d, const emd_rtp_pkt_t *pkt) {
         bool    start  = !!(fu_hdr & H264_FU_S_BIT);
         bool    end    = !!(fu_hdr & H264_FU_E_BIT);
         /* Reconstructed NAL type: high 3 bits from nal_hdr, low 5 from fu_hdr */
-        uint8_t recon_nal_type = (nal_hdr & 0xE0u) | (fu_hdr & 0x1Fu);
+        uint8_t recon_nal_type = (uint8_t)((nal_hdr & 0xE0u) | (fu_hdr & 0x1Fu));
 
         if (start) {
             d->fu_started   = true;

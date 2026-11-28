@@ -114,7 +114,7 @@ static int emit_ts(mpegts_ctx_t *ctx,
     else                           afc = 0x10u;
 
     pkt[3] = (uint8_t)(afc | (*cc_ptr & 0x0Fu));
-    *cc_ptr = (uint8_t)((*cc_ptr + 1) & 0x0Fu);
+    *cc_ptr = (uint8_t)((*cc_ptr + 1u) & 0x0Fu);
 
     size_t pos = hdr_len;
 
@@ -224,7 +224,7 @@ static int emit_pmt(mpegts_ctx_t *ctx) {
     /* Calculate section_length: everything from after the length field to end, including CRC (4 bytes) */
     /* sp is currently at the position before CRC, so section_length = sp - 3 + 4 (for CRC) */
     size_t section_length = sp - 3 + 4;
-    sec[len_pos] = 0xB0u | (uint8_t)((section_length >> 8) & 0x0Fu);
+    sec[len_pos] = (uint8_t)(0xB0u | ((section_length >> 8) & 0x0Fu));
     sec[len_pos + 1] = (uint8_t)(section_length & 0xFFu);
 
     /* CRC */

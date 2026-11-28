@@ -24,7 +24,7 @@ COPY CMakeLists.txt ./
 # Build libemd (with relaxed warnings for Docker build)
 RUN cmake -S . -B build -G Ninja \
     -DCMAKE_BUILD_TYPE=Release \
-    -DCMAKE_C_FLAGS="-O2 -D_POSIX_C_SOURCE=200809L -w" \
+    -DCMAKE_C_FLAGS="-O2 -w" \
     -DBUILD_TESTS=OFF \
     && cmake --build build --parallel \
     && mkdir -p /output/lib /output/include \
