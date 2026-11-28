@@ -11,6 +11,7 @@
 
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 #include <stdio.h>
 #include <stdint.h>
 #include <stdbool.h>
@@ -627,7 +628,6 @@ static int process_interleaved(emd_rtsp_client_t *c) {
             /* Interleaved frame */
             if (emd_tcp_recv_exact(c->fd, hdr + 1, 3, RTSP_TIMEOUT_MS) < 0) return -1;
             uint16_t dlen = (uint16_t)(((uint16_t)hdr[2] << 8) | hdr[3]);
-            if (dlen > 65535u) return -1;
             uint8_t *buf = malloc(dlen);
             if (!buf) return -1;
             int rb = emd_tcp_recv_exact(c->fd, buf, dlen, RTSP_TIMEOUT_MS);

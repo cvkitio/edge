@@ -62,6 +62,9 @@ typedef struct {
     uint8_t         on_threshold;
     uint8_t         off_threshold;
     uint32_t        min_bytes_threshold;     /* ignore frames below this byte count */
+    double          bpf_relative_floor;      /* BPF floor as fraction of baseline */
+    double          z_high_warmup;           /* z-score threshold during warmup period */
+    uint16_t        z_high_warmup_frames;    /* number of frames in warmup period */
 
     bool            gradual_enabled;
     double          gradual_threshold;

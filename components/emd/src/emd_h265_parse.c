@@ -101,8 +101,8 @@ int emd_h265_parse_sps(const uint8_t *rbsp, size_t len, emd_h265_sps_t *sps) {
     sps->log2_diff_max_min_luma_coding_block_size     = (uint8_t)emd_br_read_ue(&br);
 
     /* CTU size */
-    uint32_t log2_ctu = 3 + sps->log2_min_luma_coding_block_size_minus3
-                          + sps->log2_diff_max_min_luma_coding_block_size;
+    uint32_t log2_ctu = 3u + (uint32_t)sps->log2_min_luma_coding_block_size_minus3
+                           + (uint32_t)sps->log2_diff_max_min_luma_coding_block_size;
     sps->ctu_width  = 1u << log2_ctu;
     sps->ctu_height = sps->ctu_width;
 

@@ -12,6 +12,9 @@ project(emd
 set(CMAKE_C_STANDARD 11)
 set(CMAKE_C_STANDARD_REQUIRED ON)
 set(CMAKE_C_EXTENSIONS OFF)
+# Strict C11 hides POSIX APIs (clock_gettime, gmtime_r, ...) on glibc; ask for POSIX.1-2008 here rather
+# than in every build's CMAKE_C_FLAGS
+add_compile_definitions(_POSIX_C_SOURCE=200809L)
 
 # ---------------------------------------------------------------------------
 # Build types
@@ -30,6 +33,8 @@ add_compile_options(
 )
 
 # Hardening flags (security)
+include(CheckCCompilerFlag)
+include(CheckLinkerFlag)
 if(CMAKE_BUILD_TYPE MATCHES "Release|RelWithDebInfo")
     add_compile_options(
         -D_FORTIFY_SOURCE=2
@@ -38,7 +43,11 @@ if(CMAKE_BUILD_TYPE MATCHES "Release|RelWithDebInfo")
     if(CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|amd64")
         add_compile_options(-fstack-clash-protection -fcf-protection=full)
     elseif(CMAKE_SYSTEM_PROCESSOR MATCHES "aarch64|arm64")
-        add_compile_options(-mbranch-protection=standard)
+        # gcc 9+ / clang only; older toolchains (gcc 7.5 on Jetson Nano, JetPack 4) skip it
+        check_c_compiler_flag(-mbranch-protection=standard EMD_HAS_BRANCH_PROTECTION)
+        if(EMD_HAS_BRANCH_PROTECTION)
+            add_compile_options(-mbranch-protection=standard)
+        endif()
     endif()
 endif()
 
@@ -186,9 +195,12 @@ set_target_properties(emd_shared PROPERTIES
 add_executable(emd src/main.c)
 target_link_libraries(emd PRIVATE emd_core)
 
-# Static PIE
+# Static PIE (gcc 8+ / clang); older toolchains link the default way
 if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
-    target_link_options(emd PRIVATE -static-pie)
+    check_linker_flag(C -static-pie EMD_HAS_STATIC_PIE)
+    if(EMD_HAS_STATIC_PIE)
+        target_link_options(emd PRIVATE -static-pie)
+    endif()
 endif()
 
 # ---------------------------------------------------------------------------

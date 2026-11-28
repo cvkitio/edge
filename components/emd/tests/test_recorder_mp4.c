@@ -179,7 +179,7 @@ static void test_mpegts_creates_file(void **state) {
     FILE *fp = fopen(path, "rb");
     assert_non_null(fp);
     uint8_t sync;
-    fread(&sync, 1, 1, fp);
+    assert_int_equal((int)fread(&sync, 1, 1, fp), 1);
     fclose(fp);
     assert_int_equal((int)sync, 0x47);
 
